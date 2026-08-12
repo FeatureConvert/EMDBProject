@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Per-deposition working state - contains real sample metadata, dep_ids,
+# and local file paths a researcher may not want committed.
+depositions/
+
+# OS cruft
+.DS_Store
