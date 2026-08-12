@@ -110,6 +110,48 @@ def test_submit_refuses_without_transfer_pass(tmp_path, monkeypatch, capsys):
     assert "empiar_transfer_pass" in out["error"].lower()
 
 
+def test_submit_refuses_invalid_json_input_without_shelling_out(tmp_path, monkeypatch, capsys):
+    # submit re-validates the JSON_INPUT itself right before shelling out,
+    # in case it was edited since the last `validate` call - this must
+    # fail before ever touching the token/transfer-pass checks or
+    # subprocess, not just log a warning.
+    monkeypatch.setenv("EMPIAR_API_TOKEN", "tok123")
+    monkeypatch.setenv("EMPIAR_TRANSFER_PASS", "pass123")
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"title": "Missing everything else"}))
+
+    with patch("subprocess.run") as mock_run:
+        with pytest.raises(SystemExit) as exc:
+            empiar_deposit.cmd_submit(
+                str(bad), str(tmp_path), confirm=True,
+                ascp=None, globus=None, thumbnail=None, resume=None,
+            )
+        mock_run.assert_not_called()
+
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "validation" in out["error"].lower()
+    assert len(out["issues"]) > 0
+
+
+@patch("subprocess.run")
+def test_submit_reports_clean_error_when_binary_missing(mock_run, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("EMPIAR_API_TOKEN", "tok123")
+    monkeypatch.setenv("EMPIAR_TRANSFER_PASS", "pass123")
+    mock_run.side_effect = FileNotFoundError()
+
+    with pytest.raises(SystemExit) as exc:
+        empiar_deposit.cmd_submit(
+            str(_bundled_example()), str(tmp_path), confirm=True,
+            ascp=None, globus=None, thumbnail=None, resume=None,
+        )
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "empiar-depositor executable not found" in out["error"]
+
+
 @patch("subprocess.run")
 def test_submit_redacts_token_from_reported_command(mock_run, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("EMPIAR_API_TOKEN", "super-secret-token")

@@ -66,7 +66,11 @@ def _build_config():
 
 def _require_auth(config) -> None:
     if config.refresh_token is None:
-        fail("Not authenticated. Run `python3 auth_setup.py check` for details.")
+        fail(
+            "Not authenticated. Run "
+            "`.venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py check` "
+            "for details."
+        )
 
 
 def _open_deposition(manifest: dict, config):
@@ -94,9 +98,37 @@ def _open_deposition(manifest: dict, config):
     return dep, True
 
 
+def _validate_files_section(files: list[dict]) -> None:
+    """Validate manifest['files'] shape before any session is opened, so a bad
+    manifest fails clean instead of leaving an orphaned local onedep_lib
+    session behind (or crashing with a raw KeyError from deep inside the
+    registration loop)."""
+    seen_paths: dict[str, str] = {}
+    for entry in files:
+        require_fields(entry, ["path", "file_type"])
+        path = entry["path"]
+        if path in seen_paths:
+            fail(
+                f"Manifest lists the same file path twice: {path!r} is used for both "
+                f"{seen_paths[path]!r} and {entry['file_type']!r}. Each physical file "
+                "must be registered under exactly one file_type - onedep_lib doesn't "
+                "detect duplicate paths itself, so two entries pointing at the same "
+                "file would silently register as two distinct files."
+            )
+        seen_paths[path] = entry["file_type"]
+        if "voxel" in entry:
+            require_fields(entry["voxel"], ["spacing_x", "spacing_y", "spacing_z", "contour"])
+
+
 def cmd_prepare(manifest_path: str) -> None:
     manifest = load_manifest(manifest_path)
     require_fields(manifest, ["email", "users", "country", "em_subtype", "files"])
+
+    files = manifest.get("files", [])
+    if not files:
+        fail("Manifest has no files listed under 'files'.")
+    _validate_files_section(files)
+
     config = _build_config()
 
     dep, created = _open_deposition(manifest, config)
@@ -109,20 +141,20 @@ def cmd_prepare(manifest_path: str) -> None:
         coordinates=bool(manifest.get("coordinates", False)),
     )
 
-    files = manifest.get("files", [])
-    if not files:
-        fail("Manifest has no files listed under 'files'.")
-
     for entry in files:
-        path = entry["path"]
         ftype = file_type_enum(entry["file_type"])
         # The manifest's own file_id is the source of truth for "already
         # registered" - onedep_lib's has_file() is a bool with no way to
         # recover an existing file_id by path, so it can't stand in here.
         if "file_id" not in entry:
-            entry["file_id"] = dep.add_file(path, ftype)
+            entry["file_id"] = dep.add_file(entry["path"], ftype)
         voxel = entry.get("voxel")
-        if voxel and entry["file_type"] in MAP_LIKE_TYPES:
+        # Compare against the resolved enum's canonical name, not the raw
+        # manifest string - file_type_enum() normalizes case (e.g. "em_map"
+        # resolves fine), so a raw-string membership check here would
+        # silently skip set_voxel_values() for anything not spelled exactly
+        # like the MAP_LIKE_TYPES entries.
+        if voxel and ftype.name in MAP_LIKE_TYPES:
             dep.set_voxel_values(
                 entry["file_id"],
                 spacing_x=voxel["spacing_x"],
@@ -238,7 +270,11 @@ def cmd_status(manifest_path: str) -> None:
     if hasattr(status, "status"):
         print_json({**base, "status": status.status.value})
     else:
+        # get_status() can return a DepositError instead of raising - exit
+        # non-zero so callers checking the exit code (not just scanning for
+        # an "error" key) don't mistake this for a successful status check.
         print_json({**base, "error": str(status)})
+        sys.exit(1)
 
 
 def main() -> None:
@@ -261,14 +297,25 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "prepare":
-        cmd_prepare(args.manifest)
-    elif args.command == "dry-run":
-        cmd_dry_run(args.manifest)
-    elif args.command == "submit":
-        cmd_submit(args.manifest, args.confirm, args.force)
-    elif args.command == "status":
-        cmd_status(args.manifest)
+    # onedep_lib calls throughout the cmd_* functions (add_file, deposit,
+    # get_status, ...) can raise FileNotFoundError/RuntimeError/ValueError or
+    # any OneDepError subclass (AuthError, ApiError, ApiUnreachableError,
+    # ConfigError, SchemaError) - centralizing the catch here, rather than
+    # wrapping every individual call, converts all of them to the same JSON
+    # error contract every other failure path in this script already uses.
+    from onedep_lib.exceptions import OneDepError
+
+    try:
+        if args.command == "prepare":
+            cmd_prepare(args.manifest)
+        elif args.command == "dry-run":
+            cmd_dry_run(args.manifest)
+        elif args.command == "submit":
+            cmd_submit(args.manifest, args.confirm, args.force)
+        elif args.command == "status":
+            cmd_status(args.manifest)
+    except (OneDepError, FileNotFoundError, RuntimeError, ValueError) as exc:
+        fail(f"{type(exc).__name__}: {exc}")
 
 
 if __name__ == "__main__":

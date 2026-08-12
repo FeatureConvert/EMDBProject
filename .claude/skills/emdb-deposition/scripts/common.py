@@ -23,14 +23,14 @@ def fail(message: str, **extra: Any) -> None:
     sys.exit(1)
 
 
-def load_manifest(path: str | Path) -> dict[str, Any]:
+def load_manifest(path: str | Path, label: str = "Manifest") -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
-        fail(f"Manifest not found: {p}")
+        fail(f"{label} not found: {p}")
     try:
         return json.loads(p.read_text())
     except json.JSONDecodeError as exc:
-        fail(f"Manifest at {p} is not valid JSON: {exc}")
+        fail(f"{label} at {p} is not valid JSON: {exc}")
     return {}  # unreachable, keeps type checkers happy
 
 

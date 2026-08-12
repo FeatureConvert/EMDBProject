@@ -25,8 +25,11 @@ web portal. Confirmed by reading the installed package source:
 3. In your own shell (not through Claude), run:
 
    ```bash
-   ONEDEP_REFRESH_TOKEN="<paste-the-token>" python3 scripts/auth_setup.py login
+   ONEDEP_REFRESH_TOKEN="<paste-the-token>" .venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py login
    ```
+
+   (run from the project root; use the project's venv, not a bare `python3`
+   — a bare `python3` won't have `onedep_lib` installed.)
 
    This validates the token and writes it to
    `~/.config/onedep/config.toml`, outside the project directory.
@@ -81,7 +84,8 @@ use the EMDB map deposition path.
 
 Once ORCID login succeeds, `~/.config/onedep/config.toml` should exist with
 an `[auths.<fqdn>]` section (token values, not shown by the skill). Run
-`python3 scripts/auth_setup.py check` to confirm without exposing secrets.
+`.venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py check`
+to confirm without exposing secrets.
 
 ## Open items
 

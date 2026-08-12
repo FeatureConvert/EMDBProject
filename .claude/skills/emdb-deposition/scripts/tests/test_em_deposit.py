@@ -106,6 +106,77 @@ def test_prepare_fails_cleanly_on_missing_required_field(tmp_path, capsys):
     assert "email" in out["error"]
 
 
+def test_prepare_rejects_duplicate_file_paths(tmp_path, capsys):
+    # Two entries pointing at the same physical file used to silently
+    # register as two distinct files in the onedep_lib session (since
+    # add_file() itself does no path-uniqueness check), which could pass
+    # the required-file *count* check while actually uploading the same
+    # bytes twice under two different roles.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    dup_path = manifest["files"][0]["path"]
+    manifest["files"][1]["path"] = dup_path  # half1 now points at the map file
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "same file path twice" in out["error"]
+
+
+def test_prepare_fails_cleanly_on_file_entry_missing_path(tmp_path, capsys):
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["files"][1]["path"]
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "path" in out["error"]
+
+
+def test_prepare_fails_cleanly_on_voxel_missing_contour(tmp_path, capsys):
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["files"][0]["voxel"]["contour"]
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "contour" in out["error"]
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_applies_voxel_regardless_of_file_type_case(mock_deposit_init, mock_config_cls, tmp_path):
+    # file_type_enum() normalizes case (e.g. "em_map" resolves fine), so the
+    # voxel-application check must key off the resolved enum, not a raw
+    # string comparison against the manifest's exact spelling.
+    mock_config_cls.load.return_value = _fake_config()
+    dep = MagicMock()
+    dep.session_id = "sess-1"
+    dep.add_file.side_effect = ["fid-1", "fid-2", "fid-3", "fid-4"]
+    mock_deposit_init.return_value = dep
+
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["file_type"] = "em_map"  # lowercase
+    manifest_path.write_text(json.dumps(manifest))
+
+    em_deposit.cmd_prepare(str(manifest_path))
+
+    dep.set_voxel_values.assert_called_once()
+    assert dep.set_voxel_values.call_args.args[0] == "fid-1"
+
+
 @patch("onedep_lib.config.DepositConfig")
 @patch("onedep_lib.deposit_resume")
 def test_prepare_resumes_existing_session_without_reinit(mock_resume, mock_config_cls, tmp_path):
@@ -209,3 +280,52 @@ def test_submit_does_not_deposit_when_required_files_missing(mock_resume, mock_c
     dep.deposit.assert_not_called()
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is False
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_status_exits_nonzero_on_deposit_error(mock_resume, mock_config_cls, tmp_path, capsys):
+    # get_status() can return a DepositError instead of raising - the exit
+    # code must reflect failure too, not just the printed "error" key, so a
+    # caller checking only the exit code doesn't mistake this for success.
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+
+    class FakeDepositError:  # no .status attribute, unlike a real status result
+        def __str__(self) -> str:
+            return "processing failed: bad map header"
+
+    dep = MagicMock()
+    dep.get_status.return_value = FakeDepositError()
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(
+        tmp_path, session_id="sess-1", remote_dep_id="D_8000000001"
+    )
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_status(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert "error" in out
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_main_converts_onedep_lib_exception_to_json(mock_resume, mock_config_cls, tmp_path, capsys, monkeypatch):
+    # Any uncaught FileNotFoundError/RuntimeError/OneDepError from inside a
+    # cmd_* function must come out as JSON on stdout via main()'s dispatch
+    # try/except, not a raw traceback - this is the "every script always
+    # prints JSON" contract SKILL.md relies on to parse results.
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+    mock_resume.side_effect = FileNotFoundError("File not found: /nope.mrc")
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1", remote_dep_id="D_1")
+    monkeypatch.setattr(
+        sys, "argv", ["em_deposit.py", "status", "--manifest", str(manifest_path)]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.main()
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "FileNotFoundError" in out["error"]

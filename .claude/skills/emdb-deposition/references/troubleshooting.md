@@ -25,7 +25,7 @@ not a bare `python3`.
 
 ## Authentication (OneDep / EMDB)
 
-**`Not authenticated. Run 'python3 auth_setup.py check' for details.`**
+**`Not authenticated. Run '.venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py check' for details.`**
 This is our own message from `em_deposit.py submit`/`status` — you haven't
 logged in yet, or your token expired. Follow
 [setup_checklist.md](setup_checklist.md) to get a fresh refresh token, then
@@ -61,9 +61,27 @@ Path typo, or you're running the command from the wrong working directory.
 Manifests live under `depositions/<slug>/manifest.json` at the project
 root — use an absolute path if you're unsure of your current directory.
 
-**`<path> is not valid JSON: ...`**
+**`Manifest at <path> is not valid JSON: ...`**
 Syntax error in the manifest — usually a trailing comma or an unescaped
-quote. The error includes the exact JSON parse failure location.
+quote. The error includes the exact JSON parse failure location. (For
+`empiar_deposit.py`, the equivalent message says `JSON_INPUT at <path> is
+not valid JSON: ...` — both share the same underlying loader.)
+
+**`Manifest is missing required field(s): <list>`**
+Either the manifest itself is missing a top-level field (`email`, `users`,
+`country`, `em_subtype`, `files`), or — if the message is about a specific
+file entry — one of its `files[]` entries is missing `path`/`file_type`, or
+its `voxel` object is missing one of `spacing_x`/`spacing_y`/`spacing_z`/
+`contour`. Add the missing field(s) and re-run `prepare`.
+
+**`Manifest lists the same file path twice: '<path>' is used for both '<type1>' and '<type2>'. ...`**
+Two entries in `files[]` point at the same physical file. `onedep_lib`
+doesn't detect duplicate paths on its own — two entries pointing at the
+same file would otherwise silently register as two distinct files and
+could pass the required-file *count* check (e.g. looking like two valid
+half-maps) while actually uploading the same bytes twice under different
+roles. Fix the manifest so each physical file appears in exactly one
+`files[]` entry.
 
 **`Unknown country: '<value>'. Use a Country enum name ... or its exact wwPDB display value ...`**
 Use either the short enum form (`UK`, `USA`) or the exact display string
@@ -80,8 +98,15 @@ exactly (e.g. `EM_MAP`, `EM_HALF_MAP`, `ENTRY_IMAGE`, `MMCIF_COORD`) — see
 the table in [em_deposition_fields.md](em_deposition_fields.md).
 
 **`FileNotFoundError: File not found: <path>`**
-A file listed in the manifest doesn't exist at that path. Check for typos
-or a file that moved after the manifest was written.
+Raised by `onedep_lib` itself (not this project's own scripts — you won't
+find this exact string by grepping `scripts/*.py`; look in
+`.venv/lib/python*/site-packages/onedep_lib/dsp.py` instead) when a file
+listed in the manifest doesn't exist at that path. `em_deposit.py`'s `main()`
+catches this and every other `onedep_lib`/`FileNotFoundError`/`RuntimeError`/
+`ValueError` centrally, so you'll see it as a normal `{"success": false,
+"error": "FileNotFoundError: File not found: ..."}` JSON line rather than a
+raw traceback. Check for typos or a file that moved after the manifest was
+written.
 
 **`session_id '<id>' from the manifest no longer exists locally (~/.onedep/sessions). Remove session_id from the manifest and re-run prepare to start a new session.`**
 Local session state (under `~/.onedep/sessions`) was cleared, or you're
@@ -148,6 +173,18 @@ from the EMPIAR team, or ask EMPIAR support if you can't find it.
 The `--data-dir` you passed doesn't exist. This should contain
 subdirectories matching each imageset's `directory` field in the
 JSON_INPUT.
+
+**`JSON_INPUT failed schema validation - not submitting.` (with an `issues` list)**
+`submit` re-runs the same schema validation `validate` does, right before
+shelling out, in case the file was edited since the last `validate` call.
+Fix the listed issues and re-run `submit` (or `validate` first if you want
+to iterate without touching credentials/transfer).
+
+**`empiar-depositor executable not found at '<path>'. Re-run '.venv/bin/pip install -r requirements.txt' to reinstall it.`**
+The console script isn't where this script expects it (next to the current
+Python interpreter) — usually means the venv's dependencies weren't fully
+installed, or something removed the entry point after install. Reinstall
+as the message says.
 
 **`validate` reports `"ok": false` with a list of `{"path": ..., "message": ...}` issues**
 These are raw `jsonschema` validation errors against

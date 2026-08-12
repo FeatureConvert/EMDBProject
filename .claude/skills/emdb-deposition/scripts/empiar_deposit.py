@@ -12,10 +12,18 @@ https://www.ebi.ac.uk/empiar/deposition/json_submission) - there is no
 separate manifest translation layer. Build it by hand or have the skill
 help construct it conversationally, then point this script at it.
 
-Secrets, read from environment variables only - never as CLI arguments:
+Secrets, read from environment variables only - this script never accepts
+them as its own CLI arguments and never prints the API token:
   EMPIAR_API_TOKEN     Your EMPIAR API token (from empiar.org/deposition/api_token)
   EMPIAR_TRANSFER_PASS Your EMPIAR transfer password (separate from the API token;
                         read directly by empiar-depositor itself, not by this script)
+
+Note: empiar-depositor's own CLI takes the API token as a required
+positional argument, so this script necessarily puts it on the argv of the
+subprocess it launches - it is redacted from the JSON this script prints
+afterward, but it is briefly visible to process-listing tools (`ps`, /proc)
+for that subprocess's lifetime. That's a limitation of the wrapped CLI, not
+something this wrapper can avoid.
 
 Usage:
   python3 empiar_deposit.py validate --json-input <path>
@@ -34,7 +42,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import fail, print_json  # noqa: E402
+from common import fail, load_manifest, print_json  # noqa: E402
 
 
 def _schema_path() -> Path:
@@ -43,47 +51,36 @@ def _schema_path() -> Path:
     return Path(empiar_depositor.__file__).parent / "empiar_deposition.schema.json"
 
 
-def _load_json(path: str) -> dict:
-    p = Path(path)
-    if not p.exists():
-        fail(f"JSON_INPUT not found: {p}")
-    try:
-        return json.loads(p.read_text())
-    except json.JSONDecodeError as exc:
-        fail(f"{p} is not valid JSON: {exc}")
-    return {}
-
-
-def cmd_validate(json_input_path: str) -> None:
+def _validate(json_input_path: str) -> tuple[bool, list[dict]]:
+    """Schema-validate a JSON_INPUT file. Shared by cmd_validate and
+    cmd_submit, so submit re-checks against the current file on disk rather
+    than trusting that a validate run earlier in the conversation still
+    reflects any edits made since."""
     import jsonschema
 
     schema = json.loads(_schema_path().read_text())
-    data = _load_json(json_input_path)
+    data = load_manifest(json_input_path, label="JSON_INPUT")
 
     validator = jsonschema.Draft7Validator(schema)
     # Stringify path elements before sorting - e.path mixes str (object keys)
     # and int (array indices), and Python can't compare across those types,
     # so sorting the raw values would raise TypeError on some error sets.
     errors = sorted(validator.iter_errors(data), key=lambda e: [str(p) for p in e.path])
+    issues = [
+        {"path": ".".join(str(p) for p in e.path) or "<root>", "message": e.message} for e in errors
+    ]
+    return not errors, issues
 
-    if not errors:
-        # Also do a light local sanity check: each imageset's directory
-        # should plausibly exist under a data dir, checked separately in
-        # `submit` once --data-dir is known - not here, since JSON_INPUT
-        # alone doesn't carry the data root.
-        print_json({"ok": True, "issues": []})
-        return
 
-    print_json(
-        {
-            "ok": False,
-            "issues": [
-                {"path": ".".join(str(p) for p in e.path) or "<root>", "message": e.message}
-                for e in errors
-            ],
-        }
-    )
-    sys.exit(1)
+def cmd_validate(json_input_path: str) -> None:
+    # Also worth a light local sanity check beyond schema validation: each
+    # imageset's directory should plausibly exist under a data dir - not
+    # checked here since JSON_INPUT alone doesn't carry the data root, but
+    # cmd_submit checks --data-dir itself once it's known.
+    ok, issues = _validate(json_input_path)
+    print_json({"ok": ok, "issues": issues})
+    if not ok:
+        sys.exit(1)
 
 
 def cmd_submit(
@@ -97,6 +94,10 @@ def cmd_submit(
 ) -> None:
     if not confirm:
         fail("Refusing to submit without --confirm. Run `validate` first and review it with the user.")
+
+    ok, issues = _validate(json_input_path)
+    if not ok:
+        fail("JSON_INPUT failed schema validation - not submitting.", issues=issues)
 
     token = os.environ.get("EMPIAR_API_TOKEN")
     if not token:
@@ -135,7 +136,14 @@ def cmd_submit(
     # Redact the token before ever printing the command we ran.
     redacted = [a if a != token else "***" for a in argv]
 
-    result = subprocess.run(argv, capture_output=True, text=True)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True)
+    except FileNotFoundError:
+        fail(
+            f"empiar-depositor executable not found at {empiar_depositor_bin!r}. "
+            "Re-run `.venv/bin/pip install -r requirements.txt` to reinstall it."
+        )
+        return
     print_json(
         {
             "success": result.returncode == 0,

@@ -88,7 +88,10 @@ known) rather than asking the user to name it if it's obvious.
    ```
    This creates or resumes a local session and registers all files. Safe
    to run again any time the manifest changes (e.g. a new file added) —
-   it won't duplicate already-registered files.
+   it won't duplicate already-registered files, and it refuses upfront if
+   two entries in `files[]` accidentally point at the same physical path
+   (a real mistake to catch before it reaches wwPDB, not just a cosmetic
+   check).
 
 4. **Dry-run** before ever proposing a real submission:
    ```bash
