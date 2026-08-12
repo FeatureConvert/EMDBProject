@@ -198,20 +198,24 @@ def cmd_submit(manifest_path: str, confirm: bool, force: bool) -> None:
         sys.exit(1)
 
     dep_id = dep.deposit()
+    site_url = dep.site_url
     dep.close()
 
     manifest["remote_dep_id"] = dep_id
+    if site_url:
+        manifest["site_url"] = site_url
     save_manifest(manifest_path, manifest)
     print_json(
         {
             "success": True,
             "remote_dep_id": dep_id,
+            "site_url": site_url,
             "note": (
                 "Core files uploaded and processing triggered. The depositor "
                 "still needs to complete the detailed experimental sections "
                 "(Specimen Preparation, Microscopy, Image Recording, "
                 "Reconstruction, Fitting/Interpretation) in the OneDep web UI "
-                "before this entry can be validated and released."
+                "at the site_url above before this entry can be validated and released."
             ),
         }
     )
@@ -230,10 +234,11 @@ def cmd_status(manifest_path: str) -> None:
     status = dep.get_status()
     dep.close()
 
+    base = {"remote_dep_id": manifest["remote_dep_id"], "site_url": manifest.get("site_url")}
     if hasattr(status, "status"):
-        print_json({"remote_dep_id": manifest["remote_dep_id"], "status": status.status.value})
+        print_json({**base, "status": status.status.value})
     else:
-        print_json({"remote_dep_id": manifest["remote_dep_id"], "error": str(status)})
+        print_json({**base, "error": str(status)})
 
 
 def main() -> None:

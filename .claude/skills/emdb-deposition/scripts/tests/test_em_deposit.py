@@ -154,6 +154,7 @@ def test_submit_calls_deposit_only_when_required_files_ok(mock_resume, mock_conf
     report.ok = True
     dep.check_required_files.return_value = report
     dep.deposit.return_value = "D_8000000002"
+    dep.site_url = "https://deposit-pdbe.wwpdb.org/deposition/D_8000000002/"
     mock_resume.return_value = dep
 
     manifest_path = _manifest(tmp_path, session_id="sess-1")
@@ -163,6 +164,10 @@ def test_submit_calls_deposit_only_when_required_files_ok(mock_resume, mock_conf
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is True
     assert out["remote_dep_id"] == "D_8000000002"
+    assert out["site_url"] == "https://deposit-pdbe.wwpdb.org/deposition/D_8000000002/"
+
+    saved = json.loads(manifest_path.read_text())
+    assert saved["site_url"] == "https://deposit-pdbe.wwpdb.org/deposition/D_8000000002/"
 
 
 @patch("onedep_lib.config.DepositConfig")
