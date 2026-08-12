@@ -6,6 +6,7 @@ libraries (`onedep_lib`, `empiar-depositor`) instead of browser automation.
 
 - [Why](#why)
 - [What's here](#whats-here)
+- [Installing this skill in your Claude client](#installing-this-skill-in-your-claude-client)
 - [Setup](#setup)
 - [Two ways to use this](#two-ways-to-use-this)
 - [Tutorial: depositing an EMDB map](#tutorial-depositing-an-emdb-map)
@@ -45,6 +46,40 @@ depositions/                          # created per deposition, gitignored — n
     ├── manifest.json                 # EMDB deposition state
     └── empiar/json_input.json        # EMPIAR deposition state
 ```
+
+## Installing this skill in your Claude client
+
+This is a **Claude Code project skill** — a `SKILL.md` file plus scripts
+living in `.claude/skills/emdb-deposition/` inside this repo. It's built to
+run Python scripts against a local venv and read/write files in this
+project, so it needs [Claude Code](https://claude.com/product/claude-code)
+(or another Claude Agent SDK–based client with filesystem + Bash access) —
+it will not work through the plain claude.ai web chat, which has no
+persistent local filesystem to run these scripts against.
+
+**To use it (the confirmed, working path):**
+
+1. Clone this repo: `git clone https://github.com/FeatureConvert/EMDBProject.git`
+2. Open that directory as your project in Claude Code (e.g. `cd EMDBProject && claude`).
+
+That's it — nothing to "install" separately. Claude Code automatically
+discovers project-scoped skills under `.claude/skills/<name>/SKILL.md` for
+whatever directory it's running in, so having this repo open *is* having
+the skill available. It'll trigger automatically on relevant requests (e.g.
+"deposit this map to EMDB," "help me submit this EMPIAR dataset"), or you
+can just describe what you want and Claude will read the skill's
+instructions and follow the tutorials below.
+
+**If you want it available in other projects too** (not just this repo):
+Claude Code also supports user-level skills, typically at
+`~/.claude/skills/<name>/`, available regardless of which project you have
+open. Copy this repo's `.claude/skills/emdb-deposition/` folder there if
+you want that — we haven't verified the exact path/behavior on every Claude
+Code version/environment, so check `claude --help` or the Claude Code docs
+if it doesn't pick it up. Note that copying it out of this repo means it
+loses access to `requirements.txt`-relative paths and the `.venv/` this
+README assumes lives next to it — you'd need to adjust paths or keep a venv
+alongside the copied skill folder too.
 
 ## Setup
 
