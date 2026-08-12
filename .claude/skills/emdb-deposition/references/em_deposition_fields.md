@@ -16,11 +16,10 @@ detailed experimental sections OneDep's web wizard normally collects:
 5. Fitting/Interpretation (only relevant if coordinates are included)
 
 After `em_deposit.py submit` succeeds, the depositor still needs to log
-into the OneDep web UI (the `site_url` returned isn't currently surfaced by
-this script but is available on the `Deposition` object — worth wiring in
-if this becomes a real requirement) to fill in those sections before the
-entry can be validated and released. This tool automates deposition
-creation and core file upload only.
+into the OneDep web UI to fill in those sections before the entry can be
+validated and released — `submit` and `status` both print a `site_url`
+field with the exact link. This tool automates deposition creation and
+core file upload only.
 
 ## Manifest `file_type` values
 
