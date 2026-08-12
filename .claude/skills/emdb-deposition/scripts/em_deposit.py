@@ -116,9 +116,11 @@ def cmd_prepare(manifest_path: str) -> None:
     for entry in files:
         path = entry["path"]
         ftype = file_type_enum(entry["file_type"])
-        if not dep.has_file(path):
-            file_id = dep.add_file(path, ftype)
-            entry["file_id"] = file_id
+        # The manifest's own file_id is the source of truth for "already
+        # registered" - onedep_lib's has_file() is a bool with no way to
+        # recover an existing file_id by path, so it can't stand in here.
+        if "file_id" not in entry:
+            entry["file_id"] = dep.add_file(path, ftype)
         voxel = entry.get("voxel")
         if voxel and entry["file_type"] in MAP_LIKE_TYPES:
             dep.set_voxel_values(
