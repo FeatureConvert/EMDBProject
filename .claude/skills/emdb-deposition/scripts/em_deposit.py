@@ -49,6 +49,7 @@ from common import (  # noqa: E402
     file_type_enum,
     load_manifest,
     print_json,
+    require_fields,
     save_manifest,
 )
 
@@ -94,9 +95,8 @@ def _open_deposition(manifest: dict, config):
 
 
 def cmd_prepare(manifest_path: str) -> None:
-    import onedep_lib as dsp
-
     manifest = load_manifest(manifest_path)
+    require_fields(manifest, ["email", "users", "country", "em_subtype", "files"])
     config = _build_config()
 
     dep, created = _open_deposition(manifest, config)

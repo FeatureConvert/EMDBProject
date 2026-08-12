@@ -61,7 +61,10 @@ def cmd_validate(json_input_path: str) -> None:
     data = _load_json(json_input_path)
 
     validator = jsonschema.Draft7Validator(schema)
-    errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
+    # Stringify path elements before sorting - e.path mixes str (object keys)
+    # and int (array indices), and Python can't compare across those types,
+    # so sorting the raw values would raise TypeError on some error sets.
+    errors = sorted(validator.iter_errors(data), key=lambda e: [str(p) for p in e.path])
 
     if not errors:
         # Also do a light local sanity check: each imageset's directory
@@ -112,7 +115,13 @@ def cmd_submit(
     if not Path(data_dir).exists():
         fail(f"Data directory not found: {data_dir}")
 
-    argv = ["empiar-depositor"]
+    # Resolve the console script next to the current interpreter rather than
+    # relying on PATH - these scripts are meant to be invoked directly as
+    # `.venv/bin/python3 .../empiar_deposit.py ...` without activating the
+    # venv first, so a bare "empiar-depositor" lookup would fail with
+    # FileNotFoundError unless the caller happened to activate it.
+    empiar_depositor_bin = str(Path(sys.executable).parent / "empiar-depositor")
+    argv = [empiar_depositor_bin]
     if ascp:
         argv += ["-a", ascp]
     if globus:

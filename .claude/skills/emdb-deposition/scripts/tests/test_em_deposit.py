@@ -89,6 +89,23 @@ def test_prepare_sets_em_params_and_registers_files(mock_deposit_init, mock_conf
     assert all("file_id" in f for f in saved["files"])
 
 
+def test_prepare_fails_cleanly_on_missing_required_field(tmp_path, capsys):
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["email"]
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+
+    # Must still be valid JSON on stdout, not a raw KeyError traceback -
+    # SKILL.md relies on every script's output being parseable.
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "email" in out["error"]
+
+
 @patch("onedep_lib.config.DepositConfig")
 @patch("onedep_lib.deposit_resume")
 def test_prepare_resumes_existing_session_without_reinit(mock_resume, mock_config_cls, tmp_path):

@@ -34,6 +34,19 @@ def load_manifest(path: str | Path) -> dict[str, Any]:
     return {}  # unreachable, keeps type checkers happy
 
 
+def require_fields(manifest: dict[str, Any], fields: list[str]) -> None:
+    """Fail with a clean JSON error if any of `fields` is missing from manifest.
+
+    Without this, code that indexes manifest[...] directly raises a raw
+    KeyError traceback on stderr with no JSON on stdout - breaking the
+    "every script prints structured JSON" contract the skill relies on to
+    parse results.
+    """
+    missing = [f for f in fields if f not in manifest]
+    if missing:
+        fail(f"Manifest is missing required field(s): {', '.join(missing)}")
+
+
 def save_manifest(path: str | Path, data: dict[str, Any]) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
