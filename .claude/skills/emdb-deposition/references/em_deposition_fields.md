@@ -42,7 +42,10 @@ complete voxel block (all four sub-fields present) on entries of those
 types; a `voxel` block on e.g. an `ENTRY_IMAGE` entry is never read, so an
 incomplete one there won't block `prepare`. Values are coerced to `float`
 before being sent to `onedep_lib` — `1` and `1.0` in the manifest both work
-the same.
+the same. Non-numeric values, and non-finite ones (`NaN`/`Infinity` —
+Python's `json` module accepts these as a non-standard extension, so
+they're a real possibility, not just a theoretical one) are rejected with
+a clear error rather than silently passed through.
 
 ## `em_subtype` values
 

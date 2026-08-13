@@ -38,6 +38,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -84,6 +85,27 @@ def _require_session(manifest: dict) -> None:
 
 def _issues_json(report) -> list[dict]:
     return [{"severity": i.severity.value, "code": i.code, "message": i.message} for i in report.issues]
+
+
+def _coerce_voxel_floats(voxel: dict, path: str) -> dict[str, float]:
+    """Convert each VOXEL_FIELDS value to float, rejecting non-finite
+    results (NaN/Infinity). json.loads() accepts the bare tokens NaN/
+    Infinity/-Infinity as a non-standard extension (Python's json module
+    does this by default), so a manifest with "spacing_x": NaN parses
+    successfully and would otherwise sail through as a normal-looking
+    float with no complaint until wwPDB's own server-side validation
+    rejects it at submit time - catch it locally instead, matching this
+    project's general goal of catching what it can before that point."""
+    out = {}
+    for field in VOXEL_FIELDS:
+        try:
+            value = float(voxel[field])
+        except (TypeError, ValueError) as exc:
+            fail(f"voxel.{field} for {path!r} is not a valid number: {voxel[field]!r} ({exc})")
+        if not math.isfinite(value):
+            fail(f"voxel.{field} for {path!r} must be a finite number, got {value}")
+        out[field] = value
+    return out
 
 
 def _close_quietly(dep) -> None:
@@ -225,10 +247,7 @@ def cmd_prepare(manifest_path: str) -> None:
             # would silently skip set_voxel_values() for anything not spelled
             # exactly like the MAP_LIKE_TYPES entries.
             if voxel and ftype.name in MAP_LIKE_TYPES:
-                dep.set_voxel_values(
-                    entry["file_id"],
-                    **{field: float(voxel[field]) for field in VOXEL_FIELDS},
-                )
+                dep.set_voxel_values(entry["file_id"], **_coerce_voxel_floats(voxel, entry["path"]))
     except BaseException:
         _close_quietly(dep)
         raise

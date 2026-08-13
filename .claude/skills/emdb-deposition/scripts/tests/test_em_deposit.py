@@ -256,6 +256,51 @@ def test_prepare_coerces_voxel_values_to_float(mock_deposit_init, mock_config_cl
     assert all(isinstance(v, float) for v in call.kwargs.values())
 
 
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_rejects_non_finite_voxel_values(mock_deposit_init, mock_config_cls, bad_value, tmp_path, capsys):
+    # Found by hands-on testing: json.loads() accepts the bare tokens
+    # NaN/Infinity/-Infinity as a non-standard extension (Python's json
+    # module does this by default), so a manifest with "spacing_x": NaN
+    # parses successfully and used to sail through prepare as a normal-
+    # looking float with no complaint, only to fail later (if at all)
+    # against wwPDB's own server-side validation at submit time.
+    mock_config_cls.load.return_value = _fake_config()
+    mock_deposit_init.return_value = MagicMock(session_id="sess-1")
+
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"]["spacing_x"] = bad_value
+    manifest_path.write_text(json.dumps(manifest))  # json.dumps also emits bare NaN/Infinity by default
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "finite number" in out["error"]
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_rejects_non_numeric_voxel_value(mock_deposit_init, mock_config_cls, tmp_path, capsys):
+    mock_config_cls.load.return_value = _fake_config()
+    mock_deposit_init.return_value = MagicMock(session_id="sess-1")
+
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"]["spacing_x"] = "not-a-number"
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "not a valid number" in out["error"]
+
+
 @patch("onedep_lib.config.DepositConfig")
 @patch("onedep_lib.deposit_init")
 def test_prepare_persists_progress_incrementally_so_retry_does_not_reregister(
