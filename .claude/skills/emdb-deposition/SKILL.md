@@ -126,7 +126,11 @@ known) rather than asking the user to name it if it's obvious.
    ```
 
 7. After a successful submit, remind the user about the OneDep web UI step
-   for the detailed experimental sections (see Scope, above).
+   for the detailed experimental sections (see Scope, above), and mention
+   that their eventual publication should cite EMDB itself alongside the
+   `EMD-` accession — see [README.md's Citing section](../../../README.md#citing)
+   for the exact reference. This tool doesn't verify citations; it's the
+   depositor's own responsibility, same as any deposition route.
 
 ## EMPIAR raw-data deposition workflow
 
@@ -185,6 +189,9 @@ codes, `experiment_type` codes, imageset `category` codes).
    file recording them; re-running `submit` against the same JSON_INPUT
    after a successful run refuses unless you also pass `--force` (or
    `--resume`, above), same pattern as EMDB's `remote_dep_id` guard.
+   Mention that their publication should also cite EMPIAR itself alongside
+   the `EMPIAR-` accession — see
+   [README.md's Citing section](../../../README.md#citing).
 
 3. If `submit` fails because `EMPIAR_API_TOKEN` or `EMPIAR_TRANSFER_PASS`
    isn't set, point the user at `references/setup_checklist.md` — don't

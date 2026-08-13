@@ -14,6 +14,7 @@ libraries (`onedep_lib`, `empiar-depositor`) instead of browser automation.
 - [Running the tests](#running-the-tests)
 - [Scope and honesty check](#scope-and-honesty-check)
 - [Troubleshooting](#troubleshooting)
+- [Citing](#citing)
 - [Status](#status)
 
 ## Why
@@ -419,6 +420,44 @@ See [`references/troubleshooting.md`](.claude/skills/emdb-deposition/references/
 for real error messages (quoted from the actual libraries and scripts)
 and their fixes — authentication issues, manifest/schema errors, EMPIAR
 transfer problems, and where to look if something isn't covered there.
+
+## Citing
+
+**Citing your own deposited entry.** Both EMDB and EMPIAR ask that
+publications referencing data in their archives cite the archive itself,
+alongside the specific accession code(s) (`EMD-XXXXX`, `EMPIAR-XXXXX`) in
+the paper's methods/data-availability section:
+
+- **EMDB**: The wwPDB Consortium. "EMDB—the Electron Microscopy Data
+  Bank." *Nucleic Acids Research* 52(D1):D456–D465 (2024).
+  [doi:10.1093/nar/gkad1019](https://doi.org/10.1093/nar/gkad1019)
+- **EMPIAR**: Iudin A, et al. *Nucleic Acids Research* 51(D1):D1503–D1511
+  (2023). [doi:10.1093/nar/gkac1062](https://doi.org/10.1093/nar/gkac1062)
+  — EMPIAR's own site states: "Please cite this whenever you refer to
+  EMPIAR."
+
+This tool doesn't verify or enforce citation — it's the depositor's
+responsibility in their own publication, same as with any deposition
+route. If you're using this skill to help draft a data-availability
+statement, use these citations alongside the `remote_dep_id`/`entry_id`
+values `submit` returns.
+
+**Citing the systems and tools this project builds on.** This project is
+independent third-party tooling, not affiliated with wwPDB, EMBL-EBI, or
+the `onedep_lib`/`empiar-depositor` maintainers — if you build on this
+project's work, cite the underlying systems it wraps, not just this repo:
+
+- **wwPDB / the deposition system**: Young JY, Westbrook JD, Feng Z, Sala
+  R, Peisach E, Oldfield TJ, et al. "OneDep: Unified wwPDB System for
+  Deposition, Biocuration, and Validation of Macromolecular Structures in
+  the PDB Archive." *Structure* 25(3):536–545 (2017).
+  [doi:10.1016/j.str.2017.01.004](https://doi.org/10.1016/j.str.2017.01.004)
+- **wwPDB / the archive generally**: wwPDB Consortium. "Protein Data
+  Bank: the single global archive for 3D macromolecular structure data."
+  *Nucleic Acids Research* 47(D1):D520–D528 (2019).
+  [doi:10.1093/nar/gky949](https://doi.org/10.1093/nar/gky949)
+- **`onedep_lib`**: [github.com/wwPDB/onedep_lib](https://github.com/wwPDB/onedep_lib) (MIT-licensed, per its `LICENSE` file)
+- **`empiar-depositor`**: [github.com/emdb-empiar/empiar-depositor](https://github.com/emdb-empiar/empiar-depositor) (Apache 2.0-licensed, per its `LICENSE` file)
 
 ## Status
 
