@@ -11,6 +11,7 @@ libraries (`onedep_lib`, `empiar-depositor`) instead of browser automation.
 - [Two ways to use this](#two-ways-to-use-this)
 - [Tutorial: depositing an EMDB map](#tutorial-depositing-an-emdb-map)
 - [Tutorial: depositing to EMPIAR](#tutorial-depositing-to-empiar)
+- [Checking on all your depositions at once](#checking-on-all-your-depositions-at-once)
 - [Running the tests](#running-the-tests)
 - [Scope and honesty check](#scope-and-honesty-check)
 - [Troubleshooting](#troubleshooting)
@@ -35,8 +36,9 @@ unnecessary once we found these.
 │   ├── auth_setup.py                 # check/bootstrap wwPDB OneDep authentication
 │   ├── em_deposit.py                 # EMDB map deposition: prepare / dry-run / submit / status
 │   ├── empiar_deposit.py             # EMPIAR raw-data deposition: validate / submit
+│   ├── list_depositions.py           # read-only: summarize every local deposition's state at a glance
 │   ├── common.py                     # shared manifest/validation/safety-gate helpers
-│   └── tests/                        # unit tests for all four scripts, mocking both libraries entirely
+│   └── tests/                        # unit tests for every script, mocking both libraries entirely
 └── references/
     ├── setup_checklist.md            # one-time account/token setup
     ├── em_deposition_fields.md       # manifest schema, what the API does/doesn't cover
@@ -384,6 +386,33 @@ this to the related EMDB entry's image), `--resume <entry_id> <entry_dir>`
 starting over — bypasses the resubmission guard above entirely, since
 resuming isn't a duplicate submission; don't combine with `--force`, which
 means the opposite).
+
+## Checking on all your depositions at once
+
+Once you have more than one or two in flight, `list_depositions.py` scans
+`depositions/` and summarizes each one's state — purely local, read-only,
+no network or auth needed:
+
+```bash
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/list_depositions.py
+```
+
+```json
+{
+  "depositions_dir": "depositions",
+  "exists": true,
+  "depositions": {
+    "my-protein-2026-08": {
+      "emdb": {"state": "submitted", "session_id": "...", "remote_dep_id": "D_8000000001", "site_url": "..."},
+      "empiar": {"json_inputs": [{"json_input": "json_input.json", "state": "submitted", "entry_id": "12345", ...}]}
+    }
+  }
+}
+```
+
+`emdb`/`empiar` are `null` for a slug that only has the other kind of
+deposition. Pass `--depositions-dir <path>` to point at a different
+location.
 
 ## Running the tests
 

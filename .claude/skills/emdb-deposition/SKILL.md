@@ -68,10 +68,20 @@ is missing.
 
 Create a working directory per deposition at the project root:
 `depositions/<descriptive-slug>/manifest.json` for EMDB, or
-`depositions/<descriptive-slug>/empiar/json_input.json` for EMPIAR. This
-directory is gitignored — it holds real sample metadata and dep_ids, not
-skill code. Pick the slug from context (sample name, EMD accession if
-known) rather than asking the user to name it if it's obvious.
+`depositions/<descriptive-slug>/empiar/json_input.json` for EMPIAR
+(EMPIAR additionally records `entry_id`/`entry_directory` in a sidecar
+`<json_input>.submitted.json` next to it after a successful submit, kept
+separate from the JSON_INPUT payload deliberately). This directory is
+gitignored — it holds real sample metadata and dep_ids, not skill code.
+Pick the slug from context (sample name, EMD accession if known) rather
+than asking the user to name it if it's obvious.
+
+If the user is juggling multiple depositions and wants an overview, use
+`list_depositions.py` (read-only, local-only, no auth needed) rather than
+opening and comparing each manifest by hand:
+```bash
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/list_depositions.py
+```
 
 ## EMDB map deposition workflow
 
