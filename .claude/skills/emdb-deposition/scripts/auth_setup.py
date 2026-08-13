@@ -23,13 +23,12 @@ overriding the rotated on-disk token with the stale original.
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import fail, print_json, run_cli  # noqa: E402
+from common import JsonArgumentParser, fail, print_json, run_cli  # noqa: E402
 
 
 def cmd_check() -> None:
@@ -98,7 +97,7 @@ def cmd_login() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = JsonArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check")
     sub.add_parser("login")

@@ -10,6 +10,43 @@ from conftest import load_script_module
 common = load_script_module("common")
 
 
+def test_json_argument_parser_converts_usage_errors_to_json(capsys):
+    # Found by actually running the scripts with bad CLI arguments:
+    # argparse's default error() prints plain text to stderr and calls
+    # sys.exit(2), entirely bypassing run_cli()'s JSON contract since
+    # parser.parse_args() runs before dispatch(). JsonArgumentParser fixes
+    # this for missing/invalid arguments AND unknown subcommands.
+    parser = common.JsonArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("prepare")
+    p.add_argument("--manifest", required=True)
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["prepare"])  # missing --manifest
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "--manifest" in out["error"]
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["bogus"])  # invalid subcommand
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "bogus" in out["error"]
+
+
+def test_json_argument_parser_help_still_prints_plain_text_and_exits_zero(capsys):
+    # --help is a different code path (parser.exit(), not parser.error())
+    # and should stay human-readable, not converted to JSON.
+    parser = common.JsonArgumentParser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(out)
+
+
 def test_require_fields_passes_when_all_present():
     common.require_fields({"a": 1, "b": 2}, ["a", "b"])  # must not raise
 

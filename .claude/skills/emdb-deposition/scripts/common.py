@@ -8,6 +8,7 @@ submit -> status), keyed by a local onedep_lib session_id once one exists.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -122,6 +123,21 @@ def run_cli(dispatch) -> None:
         dispatch()
     except Exception as exc:  # noqa: BLE001 - see docstring for why this is deliberately broad
         fail(f"{type(exc).__name__}: {exc}")
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    """An ArgumentParser whose usage errors (missing/invalid arguments,
+    unknown subcommand) go through fail()'s JSON contract instead of
+    argparse's default behavior - printing a plain-text usage message to
+    stderr and exit(2). Found by actually running the scripts with bad
+    arguments: parser.parse_args() runs before run_cli()'s dispatch, so
+    without this, a CLI usage error was the one failure mode that still
+    produced no JSON on stdout. Subparsers created via add_subparsers()
+    automatically inherit this class, so this only needs to be used for
+    each script's top-level parser."""
+
+    def error(self, message: str) -> None:
+        fail(f"Argument error: {message}")
 
 
 def save_manifest(path: str | Path, data: dict[str, Any]) -> None:

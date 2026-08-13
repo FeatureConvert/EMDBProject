@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import (  # noqa: E402
+    JsonArgumentParser,
     country_enum,
     em_subtype_enum,
     fail,
@@ -356,7 +357,7 @@ def cmd_status(manifest_path: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = JsonArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("prepare")
