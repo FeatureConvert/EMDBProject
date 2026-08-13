@@ -17,6 +17,7 @@ libraries (`onedep_lib`, `empiar-depositor`) instead of browser automation.
 - [Troubleshooting](#troubleshooting)
 - [Citing](#citing)
 - [Status](#status)
+- [Roadmap](ROADMAP.md)
 
 ## Why
 
@@ -490,20 +491,28 @@ project's work, cite the underlying systems it wraps, not just this repo:
 
 ## Status
 
-EMDB map-only, map+coordinates, and EMPIAR validation paths are built and
-tested — both with mocked unit tests and manually end to end against the
-real, installed libraries (no real credentials used). Two rounds of
-multi-angle code review (line-by-line, removed-behavior audits, cross-file
-consistency, Python-specific pitfalls, wrapper-correctness, reuse,
-efficiency, and depth-of-fix checks) caught and fixed real issues along the
-way, several confirmed by actually reproducing them against the installed
-libraries rather than by static reasoning alone — a session-resume bug that
-duplicated file registrations, a silent-failure mode where an EMPIAR entry
-could be created with no data uploaded, session leaks on exception paths,
-and two of the three scripts (`auth_setup.py`, `empiar_deposit.py`) having
-no exception handling of their own despite being expected to always emit
-JSON. All three scripts now route every uncaught exception through one
-shared safety net (`common.run_cli()`). 56 tests currently pass. Real
-`submit`/transfer has not yet been exercised against production
+EMDB map-only, map+coordinates, and EMPIAR validation/submission paths are
+built and tested — both with mocked unit tests and manually end to end
+against the real, installed libraries (no real credentials used, no real
+submission attempted). Two rounds of multi-angle code review (line-by-line,
+removed-behavior audits, cross-file consistency, Python-specific pitfalls,
+wrapper-correctness, reuse, efficiency, and depth-of-fix checks), plus a
+hands-on exploratory testing pass (actually running the scripts against
+malformed/edge-case input rather than only reading code), caught and fixed
+real issues along the way — several confirmed by reproducing them directly
+rather than by static reasoning alone. Highlights: a session-resume bug
+that duplicated file registrations; a silent-failure mode where an EMPIAR
+entry could be created with no data uploaded (and a related factual
+correction — verified directly against `empiar-depositor`'s source — after
+an earlier fix's own justification turned out to be wrong); a resubmission
+guard that initially broke the pre-existing `--resume` recovery workflow;
+non-finite (`NaN`/`Infinity`) voxel values silently passing through; and
+all three scripts now routing every uncaught exception, including CLI
+usage errors, through one shared JSON safety net
+(`common.run_cli()`/`JsonArgumentParser`). 90 tests currently pass. See
+[`ROADMAP.md`](ROADMAP.md) for researched-but-not-yet-built expansion
+ideas (composite maps, other experiment types, local file-content
+validation) and one idea that was investigated and deliberately rejected.
+Real `submit`/transfer has not yet been exercised against production
 wwPDB/EMPIAR — that only happens when you're ready with an actual
 deposition.
