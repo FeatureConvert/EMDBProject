@@ -28,7 +28,12 @@ def _fake_config(refresh_token=None):
 @patch("onedep_lib.config.DepositConfig")
 def test_check_reports_unauthenticated_when_no_refresh_token(mock_config_cls, capsys):
     mock_config_cls.load.return_value = _fake_config(refresh_token=None)
-    auth_setup.cmd_check()
+    # Exits nonzero here too, matching the "stored token invalid" branch -
+    # both report authenticated: false and a caller checking exit code alone
+    # (not parsing JSON) should see failure for either cause.
+    with pytest.raises(SystemExit) as exc:
+        auth_setup.cmd_check()
+    assert exc.value.code == 1
     out = json.loads(capsys.readouterr().out)
     assert out["authenticated"] is False
     assert "No refresh token" in out["reason"]

@@ -44,7 +44,11 @@ def cmd_check() -> None:
                 "config_path": str(config.config_path),
             }
         )
-        return
+        # Exit nonzero here too, matching the "stored token is invalid" branch
+        # below - both report authenticated: false, so a caller checking the
+        # exit code (not just parsing the JSON body) shouldn't see success
+        # for one cause of "not authenticated" but failure for the other.
+        sys.exit(1)
 
     ok = dsp.check_auth_key(config)
     print_json(
