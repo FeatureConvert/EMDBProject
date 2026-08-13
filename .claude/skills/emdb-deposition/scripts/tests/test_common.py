@@ -51,6 +51,23 @@ def test_require_fields_passes_when_all_present():
     common.require_fields({"a": 1, "b": 2}, ["a", "b"])  # must not raise
 
 
+@pytest.mark.parametrize("fn_name", ["country_enum", "em_subtype_enum", "file_type_enum"])
+def test_enum_lookups_fail_cleanly_on_non_string_input(fn_name, capsys):
+    # Found by actually running em_deposit.py with a manifest where
+    # country/em_subtype/file_type was a number: these used to crash with
+    # a generic "AttributeError: 'int' object has no attribute 'strip'"
+    # (safe, since run_cli catches it, but unhelpfully vague) instead of
+    # pointing at which field was wrong.
+    fn = getattr(common, fn_name)
+    with pytest.raises(SystemExit) as exc:
+        fn(123)
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "must be a string" in out["error"]
+    assert "123" in out["error"]
+
+
 def test_em_subtype_enum_normalizes_spaces_and_hyphens_like_country_enum():
     # country_enum() already normalized "united kingdom"/"united-kingdom";
     # em_subtype_enum() didn't, despite this project's own docs describing

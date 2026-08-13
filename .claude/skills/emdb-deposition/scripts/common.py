@@ -157,9 +157,19 @@ def save_manifest(path: str | Path, data: dict[str, Any]) -> None:
 # enums onedep_lib expects. Keys are case-insensitive.
 
 
+def _require_str(value: Any, label: str) -> str:
+    """Fail with a clean, specific message instead of a generic
+    AttributeError from .strip()/.upper() further down, if a manifest
+    field that should be a string is a number, null, or something else."""
+    if not isinstance(value, str):
+        fail(f"{label} must be a string, got {type(value).__name__}: {value!r}")
+    return value
+
+
 def country_enum(name: str):
     import onedep_lib as dsp
 
+    name = _require_str(name, "country")
     key = name.strip().upper().replace(" ", "_").replace("-", "_")
     try:
         return dsp.Country[key]
@@ -177,6 +187,7 @@ def country_enum(name: str):
 def em_subtype_enum(name: str):
     import onedep_lib as dsp
 
+    name = _require_str(name, "em_subtype")
     # Normalize spaces/hyphens the same way country_enum() does - "single
     # particle"/"single-particle" are natural phrasings (this project's own
     # docs describe subtypes as "SPA / helical / subtomogram / tomography"
@@ -196,6 +207,7 @@ def em_subtype_enum(name: str):
 def file_type_enum(name: str):
     import onedep_lib as dsp
 
+    name = _require_str(name, "file_type")
     key = name.strip().upper()
     try:
         return dsp.FileType[key]

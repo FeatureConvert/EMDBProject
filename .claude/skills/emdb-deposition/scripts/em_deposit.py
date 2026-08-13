@@ -137,6 +137,15 @@ def _validate_files_section(files: list[dict]) -> None:
     for entry in files:
         require_fields(entry, ["path", "file_type"], label="Each files[] entry")
         path = entry["path"]
+        ftype_raw = entry["file_type"]
+        # require_fields only checked presence, not type - a numeric or
+        # null file_type/path would otherwise crash on the first .strip()
+        # call below with a generic AttributeError instead of pointing at
+        # which field and file is actually wrong.
+        if not isinstance(path, str):
+            fail(f"files[] entry 'path' must be a string, got {type(path).__name__}: {path!r}")
+        if not isinstance(ftype_raw, str):
+            fail(f"files[] entry 'file_type' must be a string, got {type(ftype_raw).__name__}: {ftype_raw!r}")
         if path in seen_paths:
             fail(
                 f"Manifest lists the same file path twice: {path!r} is used for both "
@@ -160,6 +169,14 @@ def cmd_prepare(manifest_path: str) -> None:
     require_fields(manifest, ["email", "users", "country", "em_subtype", "files"])
 
     files = manifest.get("files", [])
+    # Check the type explicitly before iterating: a "files" value that's a
+    # string or dict is truthy (so a bare `if not files` wouldn't catch it)
+    # and iterable, but iterating it yields characters or dict keys - each
+    # then fails the "must be an object" check with a confusing message
+    # (e.g. "got str: 'n'", the first character of the string) instead of
+    # a clear "files must be a list" error pointing at the actual mistake.
+    if not isinstance(files, list):
+        fail(f"Manifest's 'files' field must be a list, got {type(files).__name__}: {files!r}")
     if not files:
         fail("Manifest has no files listed under 'files'.")
     _validate_files_section(files)

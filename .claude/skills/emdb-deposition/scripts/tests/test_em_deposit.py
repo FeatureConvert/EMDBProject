@@ -95,6 +95,54 @@ def test_prepare_fails_cleanly_on_missing_required_field(tmp_path, capsys):
     assert "email" in out["error"]
 
 
+@pytest.mark.parametrize("bad_files", ["not-a-list", {"a": 1}, 42, None])
+def test_prepare_fails_cleanly_when_files_is_not_a_list(bad_files, tmp_path, capsys):
+    # Found by actually running prepare with files set to a string/dict:
+    # both are truthy and iterable, so the old code iterated CHARACTERS
+    # (for a string) or DICT KEYS (for a dict) as if they were file
+    # entries, producing a deeply confusing error like "got str: 'n'"
+    # (the first character) instead of pointing at the real mistake.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"] = bad_files
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "must be a list" in out["error"]
+
+
+def test_prepare_fails_cleanly_when_file_type_is_not_a_string(tmp_path, capsys):
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][1]["file_type"] = 123
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "must be a string" in out["error"]
+
+
+def test_prepare_fails_cleanly_when_path_is_not_a_string(tmp_path, capsys):
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][1]["path"] = 42
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "must be a string" in out["error"]
+
+
 def test_prepare_rejects_duplicate_file_paths(tmp_path, capsys):
     # Two entries pointing at the same physical file used to silently
     # register as two distinct files in the onedep_lib session (since
