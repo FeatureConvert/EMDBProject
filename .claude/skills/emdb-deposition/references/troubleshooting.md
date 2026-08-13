@@ -101,12 +101,18 @@ the table in [em_deposition_fields.md](em_deposition_fields.md).
 Raised by `onedep_lib` itself (not this project's own scripts — you won't
 find this exact string by grepping `scripts/*.py`; look in
 `.venv/lib/python*/site-packages/onedep_lib/dsp.py` instead) when a file
-listed in the manifest doesn't exist at that path. `em_deposit.py`'s `main()`
-catches this and every other `onedep_lib`/`FileNotFoundError`/`RuntimeError`/
-`ValueError` centrally, so you'll see it as a normal `{"success": false,
-"error": "FileNotFoundError: File not found: ..."}` JSON line rather than a
-raw traceback. Check for typos or a file that moved after the manifest was
-written.
+listed in the manifest doesn't exist at that path. Every script's `main()`
+catches this and any other uncaught exception centrally (see
+[Every script's error contract](#every-scripts-error-contract) below), so
+you'll see it as a normal `{"success": false, "error": "FileNotFoundError:
+File not found: ..."}` JSON line rather than a raw traceback. Check for
+typos or a file that moved after the manifest was written.
+
+**`Manifest must be an object with fields [...], got NoneType: None`** (or similar)
+A manifest field that should be an object — most commonly `voxel` — was
+written as `null`, a string, or some other non-object value, often from an
+unfilled template field. Fix the manifest so that field is a proper JSON
+object with the expected sub-fields.
 
 **`session_id '<id>' from the manifest no longer exists locally (~/.onedep/sessions). Remove session_id from the manifest and re-run prepare to start a new session.`**
 Local session state (under `~/.onedep/sessions`) was cleared, or you're
@@ -145,7 +151,7 @@ manifest. Re-running without `--force` is blocked because it would
 re-upload every file to the existing deposition — usually not what you
 want unless you're deliberately adding more files to it.
 
-## Real API errors from `deposit()` / `status()`
+## Real API errors from `deposit()` / `status()` / `check_auth_key()`
 
 These come directly from `onedep_lib`'s HTTP layer, not from our wrapper —
 read the message text itself, it's usually specific:
@@ -157,6 +163,23 @@ read the message text itself, it's usually specific:
   the request. A 401/403 usually means your access token expired mid-way
   (rare, since it auto-refreshes) — re-run `auth_setup.py check`. Other
   codes come with wwPDB's own error message in the exception text.
+- **`ConfigError: Failed to parse .../config.toml: ...`** — the local
+  `~/.config/onedep/config.toml` is malformed (hand-edited and broken, or
+  corrupted). Can surface from any of the three scripts, since all of them
+  call `DepositConfig.load()`. Fix or delete the file and re-run
+  `auth_setup.py login`.
+
+## Every script's error contract
+
+`auth_setup.py`, `em_deposit.py`, and `empiar_deposit.py` each wrap their
+entire `main()` dispatch in `common.run_cli()`, which catches literally any
+exception (not an enumerated list) and converts it to
+`{"success": false, "error": "<ExceptionType>: <message>"}` on stdout with
+exit code 1 — the only things it doesn't catch are `SystemExit` (raised by
+`fail()` itself and by argparse) and `KeyboardInterrupt`, both of which
+already behave correctly on their own. If you see a raw Python traceback
+instead of JSON from any of these three scripts, that's itself a bug worth
+reporting — it should be structurally impossible.
 
 ## `empiar_deposit.py`
 
@@ -174,13 +197,31 @@ The `--data-dir` you passed doesn't exist. This should contain
 subdirectories matching each imageset's `directory` field in the
 JSON_INPUT.
 
+**`Neither --ascp resolved (no Aspera Connect found at the default install location) nor --globus was given. ...`**
+`empiar-depositor` creates the live EMPIAR entry via its API **before**
+attempting any data transfer, and silently skips the transfer entirely (no
+error of its own) if neither Aspera nor Globus is available — this check
+exists specifically to catch that before it happens, not after. Install
+Aspera Connect at its default OS location (see
+[setup_checklist.md](setup_checklist.md#4-install-a-transfer-tool-for-empiar))
+so it's auto-detected, or pass `--ascp /path/to/ascp` / `--globus <uuid>`
+explicitly.
+
+**`This EMPIAR entry already has entry_id='<id>'. ... Pass --force if that's intentional.`**
+A prior `submit` against this exact JSON_INPUT path already succeeded — the
+sidecar `<json_input>.submitted.json` file records the entry_id from that
+run. Re-running without `--force` is blocked because empiar-depositor would
+attempt to create a *second* live entry and re-transfer the data. Pass
+`--force` only if that's genuinely intentional (e.g. depositing a
+deliberately separate entry from an edited copy of the same JSON_INPUT).
+
 **`JSON_INPUT failed schema validation - not submitting.` (with an `issues` list)**
 `submit` re-runs the same schema validation `validate` does, right before
 shelling out, in case the file was edited since the last `validate` call.
 Fix the listed issues and re-run `submit` (or `validate` first if you want
 to iterate without touching credentials/transfer).
 
-**`empiar-depositor executable not found at '<path>'. Re-run '.venv/bin/pip install -r requirements.txt' to reinstall it.`**
+**`empiar-depositor executable not found at '<path>'. Re-run '.venv/bin/pip install -r .claude/skills/emdb-deposition/requirements.txt' to reinstall it.`**
 The console script isn't where this script expects it (next to the current
 Python interpreter) — usually means the venv's dependencies weren't fully
 installed, or something removed the entry point after install. Reinstall

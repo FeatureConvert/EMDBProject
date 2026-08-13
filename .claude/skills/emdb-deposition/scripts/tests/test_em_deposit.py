@@ -2,26 +2,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import load_script_module
 
-SCRIPTS_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(SCRIPTS_DIR))
-
-
-def _load_em_deposit():
-    spec = importlib.util.spec_from_file_location("em_deposit", SCRIPTS_DIR / "em_deposit.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-em_deposit = _load_em_deposit()
+em_deposit = load_script_module("em_deposit")
 
 
 def _manifest(tmp_path: Path, **overrides) -> Path:
@@ -154,6 +143,101 @@ def test_prepare_fails_cleanly_on_voxel_missing_contour(tmp_path, capsys):
     assert "contour" in out["error"]
 
 
+def test_prepare_fails_cleanly_on_voxel_that_is_not_an_object(tmp_path, capsys):
+    # A manifest with "voxel": null (a plausible authoring mistake - e.g. a
+    # template field left unfilled) used to crash with a raw TypeError from
+    # `f not in None` inside require_fields, since only key *presence* was
+    # checked, never that the container was actually a dict.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"] = None
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_prepare(str(manifest_path))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "object" in out["error"].lower()
+
+
+def test_prepare_does_not_require_voxel_fields_on_non_map_like_entries(tmp_path, capsys):
+    # _validate_files_section used to require complete voxel sub-fields on
+    # ANY entry carrying a "voxel" key, even though only map-like file types
+    # ever have their voxel data read - a stray/incomplete voxel block on an
+    # ENTRY_IMAGE entry shouldn't block prepare for data that's never used.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][3]["voxel"] = {"spacing_x": 1.0}  # ENTRY_IMAGE entry, incomplete voxel
+    manifest_path.write_text(json.dumps(manifest))
+
+    with patch("onedep_lib.config.DepositConfig") as mock_config_cls, \
+         patch("onedep_lib.deposit_init") as mock_deposit_init:
+        mock_config_cls.load.return_value = _fake_config()
+        dep = MagicMock()
+        dep.session_id = "sess-1"
+        dep.add_file.side_effect = ["fid-1", "fid-2", "fid-3", "fid-4"]
+        mock_deposit_init.return_value = dep
+
+        em_deposit.cmd_prepare(str(manifest_path))  # must not raise
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_coerces_voxel_values_to_float(mock_deposit_init, mock_config_cls, tmp_path):
+    # A manifest author writing a whole-number spacing as `1` instead of
+    # `1.0` is valid JSON and valid per require_fields (presence-only), but
+    # json.loads() yields an int, not a float - onedep_lib expects floats.
+    mock_config_cls.load.return_value = _fake_config()
+    dep = MagicMock()
+    dep.session_id = "sess-1"
+    dep.add_file.side_effect = ["fid-1", "fid-2", "fid-3", "fid-4"]
+    mock_deposit_init.return_value = dep
+
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"] = {"spacing_x": 1, "spacing_y": 1, "spacing_z": 1, "contour": 0}
+    manifest_path.write_text(json.dumps(manifest))
+
+    em_deposit.cmd_prepare(str(manifest_path))
+
+    call = dep.set_voxel_values.call_args
+    assert all(isinstance(v, float) for v in call.kwargs.values())
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_persists_progress_incrementally_so_retry_does_not_reregister(
+    mock_deposit_init, mock_config_cls, tmp_path
+):
+    # Reproduces the live-verified bug: if add_file() fails partway through
+    # the loop, files registered earlier in that same run must already be
+    # saved to the manifest - otherwise a retry re-adds them, registering
+    # the same physical file twice in the onedep_lib session store.
+    mock_config_cls.load.return_value = _fake_config()
+    dep = MagicMock()
+    dep.session_id = "sess-1"
+    dep.add_file.side_effect = ["fid-1", "fid-2", RuntimeError("boom on 3rd file")]
+    mock_deposit_init.return_value = dep
+
+    manifest_path = _manifest(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        em_deposit.cmd_prepare(str(manifest_path))
+
+    # dep.close() must still have run despite the exception
+    dep.close.assert_called_once()
+
+    # the two files that succeeded before the failure must be persisted
+    saved = json.loads(manifest_path.read_text())
+    assert saved["files"][0]["file_id"] == "fid-1"
+    assert saved["files"][1]["file_id"] == "fid-2"
+    assert "file_id" not in saved["files"][2]
+
+
 @patch("onedep_lib.config.DepositConfig")
 @patch("onedep_lib.deposit_init")
 def test_prepare_applies_voxel_regardless_of_file_type_case(mock_deposit_init, mock_config_cls, tmp_path):
@@ -256,6 +340,87 @@ def test_submit_calls_deposit_only_when_required_files_ok(mock_resume, mock_conf
 
     saved = json.loads(manifest_path.read_text())
     assert saved["site_url"] == "https://deposit-pdbe.wwpdb.org/deposition/D_8000000002/"
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_submit_persists_remote_dep_id_even_if_site_url_access_fails(mock_resume, mock_config_cls, tmp_path, capsys):
+    # deposit() has already happened for real by the time site_url is read.
+    # If reading it raises, that must not prevent remote_dep_id from being
+    # saved (it's already true), and must not turn a real success into a
+    # reported failure - the guard_resubmission() gate depends on
+    # remote_dep_id actually being persisted.
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+    dep = MagicMock()
+    report = MagicMock()
+    report.ok = True
+    dep.check_required_files.return_value = report
+    dep.deposit.return_value = "D_8000000003"
+    type(dep).site_url = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1")
+    em_deposit.cmd_submit(str(manifest_path), confirm=True, force=False)
+
+    dep.close.assert_called_once()
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["remote_dep_id"] == "D_8000000003"
+    assert out["site_url"] is None
+
+    saved = json.loads(manifest_path.read_text())
+    assert saved["remote_dep_id"] == "D_8000000003"
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_submit_closes_session_even_when_deposit_raises(mock_resume, mock_config_cls, tmp_path, capsys):
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+    dep = MagicMock()
+    report = MagicMock()
+    report.ok = True
+    dep.check_required_files.return_value = report
+    dep.deposit.side_effect = RuntimeError("network blip")
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1")
+    with pytest.raises(RuntimeError):
+        em_deposit.cmd_submit(str(manifest_path), confirm=True, force=False)
+
+    dep.close.assert_called_once()
+    # deposit() never returned an id, so nothing should have been saved
+    saved = json.loads(manifest_path.read_text())
+    assert saved.get("remote_dep_id") is None
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_dry_run_closes_session_even_when_check_required_files_raises(mock_resume, mock_config_cls, tmp_path, capsys):
+    mock_config_cls.load.return_value = _fake_config()
+    dep = MagicMock()
+    dep.check_required_files.side_effect = RuntimeError("transient failure")
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1")
+    with pytest.raises(RuntimeError):
+        em_deposit.cmd_dry_run(str(manifest_path))
+
+    dep.close.assert_called_once()
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_status_closes_session_even_when_get_status_raises(mock_resume, mock_config_cls, tmp_path, capsys):
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+    dep = MagicMock()
+    dep.get_status.side_effect = RuntimeError("transient failure")
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1", remote_dep_id="D_1")
+    with pytest.raises(RuntimeError):
+        em_deposit.cmd_status(str(manifest_path))
+
+    dep.close.assert_called_once()
 
 
 @patch("onedep_lib.config.DepositConfig")

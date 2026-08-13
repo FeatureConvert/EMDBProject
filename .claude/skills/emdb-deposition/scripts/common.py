@@ -34,17 +34,66 @@ def load_manifest(path: str | Path, label: str = "Manifest") -> dict[str, Any]:
     return {}  # unreachable, keeps type checkers happy
 
 
-def require_fields(manifest: dict[str, Any], fields: list[str]) -> None:
-    """Fail with a clean JSON error if any of `fields` is missing from manifest.
+def require_fields(container: Any, fields: list[str], label: str = "Manifest") -> None:
+    """Fail with a clean JSON error if any of `fields` is missing from container,
+    or if container isn't even a dict to begin with (e.g. a manifest field that
+    should be an object but was written as `null` or a string by mistake).
 
-    Without this, code that indexes manifest[...] directly raises a raw
-    KeyError traceback on stderr with no JSON on stdout - breaking the
-    "every script prints structured JSON" contract the skill relies on to
+    Without this, code that indexes container[...] directly raises a raw
+    KeyError/TypeError traceback on stderr with no JSON on stdout - breaking
+    the "every script prints structured JSON" contract the skill relies on to
     parse results.
     """
-    missing = [f for f in fields if f not in manifest]
+    if not isinstance(container, dict):
+        fail(f"{label} must be an object with fields {fields}, got {type(container).__name__}: {container!r}")
+    missing = [f for f in fields if f not in container]
     if missing:
-        fail(f"Manifest is missing required field(s): {', '.join(missing)}")
+        fail(f"{label} is missing required field(s): {', '.join(missing)}")
+
+
+def require_confirm(confirm: bool, review_cmd: str) -> None:
+    """Fail with a clean JSON error if --confirm wasn't passed.
+
+    Shared by every subcommand that does something real/hard-to-undo
+    (deposit(), a live EMPIAR transfer), so the wording and behavior of this
+    safety gate can't drift between scripts.
+    """
+    if not confirm:
+        fail(f"Refusing to submit without --confirm. Run `{review_cmd}` first and review it with the user.")
+
+
+def guard_resubmission(state: dict[str, Any], id_field: str, force: bool, kind: str) -> None:
+    """Fail with a clean JSON error if state[id_field] is already set and
+    --force wasn't passed - re-running submit would re-run against a
+    deposition/entry that already exists remotely."""
+    if state.get(id_field) and not force:
+        fail(
+            f"This {kind} already has {id_field}={state[id_field]!r}. "
+            f"Re-running submit will re-run against the existing {kind}. "
+            "Pass --force if that's intentional."
+        )
+
+
+def run_cli(dispatch) -> None:
+    """Run `dispatch()` (a zero-arg callable that executes the selected
+    subcommand), converting ANY uncaught exception into the same JSON error
+    contract every explicit fail() call already uses, instead of a raw
+    traceback on stderr with no parseable JSON on stdout.
+
+    Deliberately catches bare Exception rather than an enumerated list of
+    "expected" exception types: onedep_lib, jsonschema, and empiar_depositor
+    can each raise types this project doesn't control (ConfigError,
+    UnicodeDecodeError, TypeError from a malformed manifest field, ...), and
+    a previous fix that enumerated specific types kept missing new ones. This
+    intentionally does NOT catch SystemExit (raised by fail() itself via
+    sys.exit(), and by argparse) or KeyboardInterrupt - both are
+    BaseException subclasses, not Exception, so existing fail() call sites
+    and Ctrl-C still behave normally.
+    """
+    try:
+        dispatch()
+    except Exception as exc:  # noqa: BLE001 - see docstring for why this is deliberately broad
+        fail(f"{type(exc).__name__}: {exc}")
 
 
 def save_manifest(path: str | Path, data: dict[str, Any]) -> None:

@@ -25,11 +25,21 @@ afterward, but it is briefly visible to process-listing tools (`ps`, /proc)
 for that subprocess's lifetime. That's a limitation of the wrapped CLI, not
 something this wrapper can avoid.
 
+IMPORTANT: empiar-depositor creates the live EMPIAR entry via its API
+(create_new_deposition) BEFORE attempting any data transfer, and only
+transfers data if --ascp resolves to a real ascp binary or --globus is
+given - it does NOT auto-detect an installed Aspera Connect the way its
+own --help text might suggest. Omit both and you get a real, empty EMPIAR
+entry with no data uploaded, no clear error pointing at the actual cause.
+This script therefore requires that --ascp resolves (explicitly or via a
+best-effort default-location probe) or --globus is given, before it will
+shell out at all - see _resolve_ascp().
+
 Usage:
   python3 empiar_deposit.py validate --json-input <path>
   python3 empiar_deposit.py submit --json-input <path> --data-dir <path> --confirm
       [--ascp PATH_TO_ASCP] [--globus UUID] [--thumbnail PATH]
-      [--resume ENTRY_ID ENTRY_DIR]
+      [--resume ENTRY_ID ENTRY_DIR] [--force]
 """
 
 from __future__ import annotations
@@ -37,18 +47,37 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import fail, load_manifest, print_json  # noqa: E402
+from common import (  # noqa: E402
+    fail,
+    guard_resubmission,
+    load_manifest,
+    print_json,
+    require_confirm,
+    run_cli,
+)
+
+_ENTRY_ID_RE = re.compile(r"Your entry ID is (\d+) and unique data directory is (\S+)")
 
 
 def _schema_path() -> Path:
     import empiar_depositor
 
     return Path(empiar_depositor.__file__).parent / "empiar_deposition.schema.json"
+
+
+def _submitted_marker_path(json_input_path: str) -> Path:
+    """Sidecar file recording a successful prior submission - empiar-depositor
+    doesn't give us a manifest-like state file of our own to persist an
+    entry_id into, unlike em_deposit.py's manifest.json."""
+    return Path(json_input_path).with_suffix(".submitted.json")
 
 
 def _validate(json_input_path: str) -> tuple[bool, list[dict]]:
@@ -83,21 +112,37 @@ def cmd_validate(json_input_path: str) -> None:
         sys.exit(1)
 
 
+def _default_ascp_path() -> str | None:
+    """Best-effort default Aspera Connect ascp location, matching
+    empiar-depositor's own documented per-platform defaults (its --help text
+    describes these paths but the tool itself does not probe them)."""
+    system = platform.system()
+    if system == "Darwin":
+        candidate = Path.home() / "Applications" / "Aspera Connect.app" / "Contents" / "Resources" / "ascp"
+    elif system == "Windows":
+        candidate = (
+            Path.home() / "AppData" / "Local" / "Programs" / "Aspera" / "Aspera Connect" / "bin" / "ascp.exe"
+        )
+    else:
+        candidate = Path.home() / ".aspera" / "connect" / "bin" / "ascp"
+    return str(candidate) if candidate.exists() else None
+
+
 def cmd_submit(
     json_input_path: str,
     data_dir: str,
     confirm: bool,
+    force: bool,
     ascp: str | None,
     globus: str | None,
     thumbnail: str | None,
     resume: tuple[str, str] | None,
 ) -> None:
-    if not confirm:
-        fail("Refusing to submit without --confirm. Run `validate` first and review it with the user.")
+    require_confirm(confirm, "validate")
 
-    ok, issues = _validate(json_input_path)
-    if not ok:
-        fail("JSON_INPUT failed schema validation - not submitting.", issues=issues)
+    marker_path = _submitted_marker_path(json_input_path)
+    prior = json.loads(marker_path.read_text()) if marker_path.exists() else {}
+    guard_resubmission(prior, "entry_id", force, kind="EMPIAR entry")
 
     token = os.environ.get("EMPIAR_API_TOKEN")
     if not token:
@@ -115,6 +160,25 @@ def cmd_submit(
 
     if not Path(data_dir).exists():
         fail(f"Data directory not found: {data_dir}")
+
+    if not ascp:
+        ascp = _default_ascp_path()
+    if not ascp and not globus:
+        fail(
+            "Neither --ascp resolved (no Aspera Connect found at the default "
+            "install location) nor --globus was given. empiar-depositor "
+            "creates the live EMPIAR entry via its API BEFORE attempting any "
+            "data transfer, and silently skips the transfer entirely if "
+            "neither is available - this would create a real, empty EMPIAR "
+            "entry with no data uploaded. Install Aspera Connect or "
+            "globus-cli, or pass --ascp/--globus explicitly, before retrying."
+        )
+
+    # Re-validate right before shelling out, in case the file was edited
+    # since an earlier `validate` call in this conversation.
+    ok, issues = _validate(json_input_path)
+    if not ok:
+        fail("JSON_INPUT failed schema validation - not submitting.", issues=issues)
 
     # Resolve the console script next to the current interpreter rather than
     # relying on PATH - these scripts are meant to be invoked directly as
@@ -141,12 +205,32 @@ def cmd_submit(
     except FileNotFoundError:
         fail(
             f"empiar-depositor executable not found at {empiar_depositor_bin!r}. "
-            "Re-run `.venv/bin/pip install -r requirements.txt` to reinstall it."
+            "Re-run `.venv/bin/pip install -r .claude/skills/emdb-deposition/requirements.txt` "
+            "to reinstall it."
         )
         return
+
+    entry_id = entry_directory = None
+    match = _ENTRY_ID_RE.search(result.stdout)
+    if match:
+        entry_id, entry_directory = match.group(1), match.group(2)
+        marker_path.write_text(
+            json.dumps(
+                {
+                    "entry_id": entry_id,
+                    "entry_directory": entry_directory,
+                    "returncode": result.returncode,
+                    "submitted_at": datetime.now(tz=timezone.utc).isoformat(),
+                },
+                indent=2,
+            )
+        )
+
     print_json(
         {
             "success": result.returncode == 0,
+            "entry_id": entry_id,
+            "entry_directory": entry_directory,
             "command": redacted,
             "returncode": result.returncode,
             "stdout_tail": result.stdout[-4000:],
@@ -168,6 +252,7 @@ def main() -> None:
     p.add_argument("--json-input", required=True)
     p.add_argument("--data-dir", required=True)
     p.add_argument("--confirm", action="store_true")
+    p.add_argument("--force", action="store_true")
     p.add_argument("--ascp")
     p.add_argument("--globus")
     p.add_argument("--thumbnail")
@@ -175,18 +260,22 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "validate":
-        cmd_validate(args.json_input)
-    elif args.command == "submit":
-        cmd_submit(
-            args.json_input,
-            args.data_dir,
-            args.confirm,
-            args.ascp,
-            args.globus,
-            args.thumbnail,
-            tuple(args.resume) if args.resume else None,
-        )
+    def dispatch() -> None:
+        if args.command == "validate":
+            cmd_validate(args.json_input)
+        elif args.command == "submit":
+            cmd_submit(
+                args.json_input,
+                args.data_dir,
+                args.confirm,
+                args.force,
+                args.ascp,
+                args.globus,
+                args.thumbnail,
+                tuple(args.resume) if args.resume else None,
+            )
+
+    run_cli(dispatch)
 
 
 if __name__ == "__main__":

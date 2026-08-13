@@ -47,13 +47,17 @@ from common import (  # noqa: E402
     em_subtype_enum,
     fail,
     file_type_enum,
+    guard_resubmission,
     load_manifest,
     print_json,
+    require_confirm,
     require_fields,
+    run_cli,
     save_manifest,
 )
 
 MAP_LIKE_TYPES = {"EM_MAP", "EM_HALF_MAP", "EM_ADDITIONAL_MAP"}
+VOXEL_FIELDS = ("spacing_x", "spacing_y", "spacing_z", "contour")
 
 
 def _build_config():
@@ -71,6 +75,15 @@ def _require_auth(config) -> None:
             "`.venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py check` "
             "for details."
         )
+
+
+def _require_session(manifest: dict) -> None:
+    if not manifest.get("session_id"):
+        fail("No session_id in manifest yet. Run `prepare` first.")
+
+
+def _issues_json(report) -> list[dict]:
+    return [{"severity": i.severity.value, "code": i.code, "message": i.message} for i in report.issues]
 
 
 def _open_deposition(manifest: dict, config):
@@ -101,11 +114,11 @@ def _open_deposition(manifest: dict, config):
 def _validate_files_section(files: list[dict]) -> None:
     """Validate manifest['files'] shape before any session is opened, so a bad
     manifest fails clean instead of leaving an orphaned local onedep_lib
-    session behind (or crashing with a raw KeyError from deep inside the
-    registration loop)."""
+    session behind (or crashing with a raw KeyError/TypeError from deep
+    inside the registration loop)."""
     seen_paths: dict[str, str] = {}
     for entry in files:
-        require_fields(entry, ["path", "file_type"])
+        require_fields(entry, ["path", "file_type"], label="Each files[] entry")
         path = entry["path"]
         if path in seen_paths:
             fail(
@@ -116,8 +129,13 @@ def _validate_files_section(files: list[dict]) -> None:
                 "file would silently register as two distinct files."
             )
         seen_paths[path] = entry["file_type"]
-        if "voxel" in entry:
-            require_fields(entry["voxel"], ["spacing_x", "spacing_y", "spacing_z", "contour"])
+        # Only map-like files ever have their voxel data read (see the
+        # MAP_LIKE_TYPES check in cmd_prepare's registration loop) - a
+        # "voxel" block on e.g. an ENTRY_IMAGE entry is never used, so don't
+        # demand it be complete; that would only produce a confusing error
+        # for data that was never going to matter.
+        if "voxel" in entry and entry["file_type"].strip().upper() in MAP_LIKE_TYPES:
+            require_fields(entry["voxel"], list(VOXEL_FIELDS), label=f"voxel block for {path!r}")
 
 
 def cmd_prepare(manifest_path: str) -> None:
@@ -136,34 +154,40 @@ def cmd_prepare(manifest_path: str) -> None:
         manifest["session_id"] = dep.session_id
         save_manifest(manifest_path, manifest)
 
-    dep.set_em_params(
-        em_subtype=em_subtype_enum(manifest["em_subtype"]),
-        coordinates=bool(manifest.get("coordinates", False)),
-    )
+    try:
+        dep.set_em_params(
+            em_subtype=em_subtype_enum(manifest["em_subtype"]),
+            coordinates=bool(manifest.get("coordinates", False)),
+        )
 
-    for entry in files:
-        ftype = file_type_enum(entry["file_type"])
-        # The manifest's own file_id is the source of truth for "already
-        # registered" - onedep_lib's has_file() is a bool with no way to
-        # recover an existing file_id by path, so it can't stand in here.
-        if "file_id" not in entry:
-            entry["file_id"] = dep.add_file(entry["path"], ftype)
-        voxel = entry.get("voxel")
-        # Compare against the resolved enum's canonical name, not the raw
-        # manifest string - file_type_enum() normalizes case (e.g. "em_map"
-        # resolves fine), so a raw-string membership check here would
-        # silently skip set_voxel_values() for anything not spelled exactly
-        # like the MAP_LIKE_TYPES entries.
-        if voxel and ftype.name in MAP_LIKE_TYPES:
-            dep.set_voxel_values(
-                entry["file_id"],
-                spacing_x=voxel["spacing_x"],
-                spacing_y=voxel["spacing_y"],
-                spacing_z=voxel["spacing_z"],
-                contour=voxel["contour"],
-            )
+        for entry in files:
+            ftype = file_type_enum(entry["file_type"])
+            # The manifest's own file_id is the source of truth for "already
+            # registered" - onedep_lib's has_file() is a bool with no way to
+            # recover an existing file_id by path, so it can't stand in here.
+            if "file_id" not in entry:
+                entry["file_id"] = dep.add_file(entry["path"], ftype)
+                # Persist after EVERY successful add_file, not once at the
+                # end of the loop: if a later file in the list fails (e.g.
+                # FileNotFoundError), the files that already succeeded must
+                # stay recorded, or a retry will re-add them - registering
+                # the same physical file twice in the onedep_lib session
+                # store, which nothing else here would catch.
+                save_manifest(manifest_path, manifest)
+            voxel = entry.get("voxel")
+            # Compare against the resolved enum's canonical name, not the raw
+            # manifest string - file_type_enum() normalizes case (e.g.
+            # "em_map" resolves fine), so a raw-string membership check here
+            # would silently skip set_voxel_values() for anything not spelled
+            # exactly like the MAP_LIKE_TYPES entries.
+            if voxel and ftype.name in MAP_LIKE_TYPES:
+                dep.set_voxel_values(
+                    entry["file_id"],
+                    **{field: float(voxel[field]) for field in VOXEL_FIELDS},
+                )
+    finally:
+        dep.close()
 
-    dep.close()
     save_manifest(manifest_path, manifest)
     print_json(
         {
@@ -176,67 +200,65 @@ def cmd_prepare(manifest_path: str) -> None:
 
 def cmd_dry_run(manifest_path: str) -> None:
     manifest = load_manifest(manifest_path)
-    if not manifest.get("session_id"):
-        fail("No session_id in manifest yet. Run `prepare` first.")
+    _require_session(manifest)
     config = _build_config()
     dep, _ = _open_deposition(manifest, config)
 
-    report = dep.check_required_files()
-    dep.close()
+    try:
+        report = dep.check_required_files()
+    finally:
+        dep.close()
 
-    print_json(
-        {
-            "ok": report.ok,
-            "issues": [
-                {"severity": i.severity.value, "code": i.code, "message": i.message}
-                for i in report.issues
-            ],
-        }
-    )
+    print_json({"ok": report.ok, "issues": _issues_json(report)})
     if not report.ok:
         sys.exit(1)
 
 
 def cmd_submit(manifest_path: str, confirm: bool, force: bool) -> None:
     manifest = load_manifest(manifest_path)
-    if not manifest.get("session_id"):
-        fail("No session_id in manifest yet. Run `prepare` first.")
-    if not confirm:
-        fail("Refusing to submit without --confirm. Run `dry-run` first and review it with the user.")
-    if manifest.get("remote_dep_id") and not force:
-        fail(
-            f"This manifest already has remote_dep_id={manifest['remote_dep_id']!r}. "
-            "Re-running submit will re-upload files against the existing deposition. "
-            "Pass --force if that's intentional."
-        )
+    _require_session(manifest)
+    require_confirm(confirm, "dry-run")
+    guard_resubmission(manifest, "remote_dep_id", force, kind="deposition")
 
     config = _build_config()
     _require_auth(config)
     dep, _ = _open_deposition(manifest, config)
 
-    report = dep.check_required_files()
-    if not report.ok:
+    try:
+        report = dep.check_required_files()
+        if not report.ok:
+            print_json(
+                {
+                    "success": False,
+                    "error": "check_required_files failed - not submitting.",
+                    "issues": _issues_json(report),
+                }
+            )
+            sys.exit(1)
+
+        dep_id = dep.deposit()
+        # Persist remote_dep_id IMMEDIATELY - deposit() has already happened
+        # for real at this point. If site_url access or close() below raised
+        # before this got saved, the manifest would show no remote_dep_id,
+        # and guard_resubmission() above would then wave a retry straight
+        # through to re-upload against the now-live deposition.
+        manifest["remote_dep_id"] = dep_id
+        save_manifest(manifest_path, manifest)
+
+        # dep_id is already real and saved above - don't let a problem
+        # reading/closing the session turn a successful submission into a
+        # reported failure. Best-effort only past this point.
+        try:
+            site_url = dep.site_url
+        except Exception:  # noqa: BLE001 - deliberately swallow, see comment above
+            site_url = None
+    finally:
         dep.close()
-        print_json(
-            {
-                "success": False,
-                "error": "check_required_files failed - not submitting.",
-                "issues": [
-                    {"severity": i.severity.value, "code": i.code, "message": i.message}
-                    for i in report.issues
-                ],
-            }
-        )
-        sys.exit(1)
 
-    dep_id = dep.deposit()
-    site_url = dep.site_url
-    dep.close()
-
-    manifest["remote_dep_id"] = dep_id
     if site_url:
         manifest["site_url"] = site_url
-    save_manifest(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
+
     print_json(
         {
             "success": True,
@@ -255,16 +277,17 @@ def cmd_submit(manifest_path: str, confirm: bool, force: bool) -> None:
 
 def cmd_status(manifest_path: str) -> None:
     manifest = load_manifest(manifest_path)
-    if not manifest.get("session_id"):
-        fail("No session_id in manifest yet. Run `prepare` first.")
+    _require_session(manifest)
     if not manifest.get("remote_dep_id"):
         fail("No remote_dep_id in manifest yet. Run `submit` first.")
 
     config = _build_config()
     _require_auth(config)
     dep, _ = _open_deposition(manifest, config)
-    status = dep.get_status()
-    dep.close()
+    try:
+        status = dep.get_status()
+    finally:
+        dep.close()
 
     base = {"remote_dep_id": manifest["remote_dep_id"], "site_url": manifest.get("site_url")}
     if hasattr(status, "status"):
@@ -297,15 +320,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # onedep_lib calls throughout the cmd_* functions (add_file, deposit,
-    # get_status, ...) can raise FileNotFoundError/RuntimeError/ValueError or
-    # any OneDepError subclass (AuthError, ApiError, ApiUnreachableError,
-    # ConfigError, SchemaError) - centralizing the catch here, rather than
-    # wrapping every individual call, converts all of them to the same JSON
-    # error contract every other failure path in this script already uses.
-    from onedep_lib.exceptions import OneDepError
-
-    try:
+    def dispatch() -> None:
         if args.command == "prepare":
             cmd_prepare(args.manifest)
         elif args.command == "dry-run":
@@ -314,8 +329,8 @@ def main() -> None:
             cmd_submit(args.manifest, args.confirm, args.force)
         elif args.command == "status":
             cmd_status(args.manifest)
-    except (OneDepError, FileNotFoundError, RuntimeError, ValueError) as exc:
-        fail(f"{type(exc).__name__}: {exc}")
+
+    run_cli(dispatch)
 
 
 if __name__ == "__main__":

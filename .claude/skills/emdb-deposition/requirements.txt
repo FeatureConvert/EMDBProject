@@ -1,4 +1,3 @@
 onedep_lib
 empiar-depositor
-emdb
 jsonschema

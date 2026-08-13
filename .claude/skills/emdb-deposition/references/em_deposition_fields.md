@@ -37,7 +37,12 @@ full list, which also covers X-ray/NMR/etc.):
 
 `voxel` (spacing_x/y/z + contour) is only meaningful on map-like files
 (`EM_MAP`, `EM_HALF_MAP`, `EM_ADDITIONAL_MAP`) — `em_deposit.py` only calls
-`set_voxel_values()` for those types.
+`set_voxel_values()` for those types, and `prepare` only *requires* a
+complete voxel block (all four sub-fields present) on entries of those
+types; a `voxel` block on e.g. an `ENTRY_IMAGE` entry is never read, so an
+incomplete one there won't block `prepare`. Values are coerced to `float`
+before being sent to `onedep_lib` — `1` and `1.0` in the manifest both work
+the same.
 
 ## `em_subtype` values
 

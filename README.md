@@ -34,8 +34,8 @@ unnecessary once we found these.
 │   ├── auth_setup.py                 # check/bootstrap wwPDB OneDep authentication
 │   ├── em_deposit.py                 # EMDB map deposition: prepare / dry-run / submit / status
 │   ├── empiar_deposit.py             # EMPIAR raw-data deposition: validate / submit
-│   ├── common.py                     # shared manifest + enum-lookup helpers
-│   └── tests/                        # unit tests, mocking both libraries entirely
+│   ├── common.py                     # shared manifest/validation/safety-gate helpers
+│   └── tests/                        # unit tests for all four scripts, mocking both libraries entirely
 └── references/
     ├── setup_checklist.md            # one-time account/token setup
     ├── em_deposition_fields.md       # manifest schema, what the API does/doesn't cover
@@ -303,7 +303,7 @@ starting point.
 
 ```bash
 mkdir -p depositions/my-protein-2026-08/empiar
-cp .venv/lib/python3.11/site-packages/empiar_depositor/tests/deposition_json/working_example.json \
+cp .venv/lib/python3.*/site-packages/empiar_depositor/tests/deposition_json/working_example.json \
    depositions/my-protein-2026-08/empiar/json_input.json
 ```
 
@@ -330,11 +330,19 @@ You need `EMPIAR_API_TOKEN` and `EMPIAR_TRANSFER_PASS` set as environment
 variables in your own shell (see
 [setup_checklist.md](.claude/skills/emdb-deposition/references/setup_checklist.md))
 and either Aspera Connect (`ascp`) or `globus-cli` installed for the
-actual data transfer.
+actual data transfer — **this is required, not optional**: `submit`
+refuses to run at all without one of them, because `empiar-depositor`
+creates the live EMPIAR entry via its API *before* attempting any
+transfer, and would otherwise silently create a real, empty entry with no
+data uploaded. If Aspera Connect is installed at its OS-default location,
+it's auto-detected — no `--ascp` flag needed.
 
 ### Step 4 — submit
 
-Real upload, real EMPIAR entry creation — confirm you mean it:
+Real upload, real EMPIAR entry creation — confirm you mean it. This is
+even more irreversible than EMDB's `submit`: the entry gets created
+server-side before any data transfer starts, so there's no equivalent of
+"it failed cleanly, nothing happened."
 
 ```bash
 .venv/bin/python3 .claude/skills/emdb-deposition/scripts/empiar_deposit.py submit \
@@ -342,6 +350,25 @@ Real upload, real EMPIAR entry creation — confirm you mean it:
   --data-dir /path/to/your/micrographs_root \
   --confirm
 ```
+
+```json
+{
+  "success": true,
+  "entry_id": "12345",
+  "entry_directory": "abcde12345",
+  "command": ["...", "***", "..."],
+  "returncode": 0,
+  "stdout_tail": "...",
+  "stderr_tail": ""
+}
+```
+
+`entry_id`/`entry_directory` are parsed from empiar-depositor's own output
+— relay these to whoever needs the citable accession info. A sidecar
+`depositions/my-protein-2026-08/empiar/json_input.submitted.json` file
+records them; re-running `submit` against the same JSON_INPUT afterward
+refuses unless you also pass `--force`, same pattern as EMDB's
+`remote_dep_id` guard.
 
 Useful optional flags: `--ascp /path/to/ascp` (non-default Aspera
 location), `--globus <uuid>` (use Globus instead of/as a fallback to
@@ -389,8 +416,18 @@ transfer problems, and where to look if something isn't covered there.
 
 EMDB map-only, map+coordinates, and EMPIAR validation paths are built and
 tested — both with mocked unit tests and manually end to end against the
-real, installed libraries (no real credentials used). A genuine bug in the
-session-resume path was caught by the test suite and fixed. Real
+real, installed libraries (no real credentials used). Two rounds of
+multi-angle code review (line-by-line, removed-behavior audits, cross-file
+consistency, Python-specific pitfalls, wrapper-correctness, reuse,
+efficiency, and depth-of-fix checks) caught and fixed real issues along the
+way, several confirmed by actually reproducing them against the installed
+libraries rather than by static reasoning alone — a session-resume bug that
+duplicated file registrations, a silent-failure mode where an EMPIAR entry
+could be created with no data uploaded, session leaks on exception paths,
+and two of the three scripts (`auth_setup.py`, `empiar_deposit.py`) having
+no exception handling of their own despite being expected to always emit
+JSON. All three scripts now route every uncaught exception through one
+shared safety net (`common.run_cli()`). 56 tests currently pass. Real
 `submit`/transfer has not yet been exercised against production
 wwPDB/EMPIAR — that only happens when you're ready with an actual
 deposition.

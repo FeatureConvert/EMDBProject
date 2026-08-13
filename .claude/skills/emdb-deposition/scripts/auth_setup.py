@@ -8,9 +8,10 @@ wwPDB OneDep web portal:
   2. Scroll to the "Deposition API" section and generate an API refresh
      token. It is a 30-day token shown ONCE - copy it immediately.
 
-Usage:
-  python3 auth_setup.py check
-  ONEDEP_REFRESH_TOKEN=<pasted-token> python3 auth_setup.py login
+Usage (run from the project root, using the project's venv):
+  .venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py check
+  ONEDEP_REFRESH_TOKEN=<pasted-token> .venv/bin/python3 \
+      .claude/skills/emdb-deposition/scripts/auth_setup.py login
 
 `login` reads the token from the ONEDEP_REFRESH_TOKEN environment variable
 only - never as a CLI argument (shell history / process list exposure) and
@@ -28,7 +29,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import fail, print_json  # noqa: E402
+from common import fail, print_json, run_cli  # noqa: E402
 
 
 def cmd_check() -> None:
@@ -69,7 +70,8 @@ def cmd_login() -> None:
             "ONEDEP_REFRESH_TOKEN is not set. Generate a token from the "
             "'Deposition API' section at https://deposit-pdbe.wwpdb.org/deposition/ "
             "(after signing in with ORCID), then re-run as: "
-            "ONEDEP_REFRESH_TOKEN=<token> python3 auth_setup.py login"
+            "ONEDEP_REFRESH_TOKEN=<token> .venv/bin/python3 "
+            ".claude/skills/emdb-deposition/scripts/auth_setup.py login"
         )
 
     config = DepositConfig.load()  # picks up ONEDEP_REFRESH_TOKEN automatically
@@ -102,10 +104,13 @@ def main() -> None:
     sub.add_parser("login")
     args = parser.parse_args()
 
-    if args.command == "check":
-        cmd_check()
-    elif args.command == "login":
-        cmd_login()
+    def dispatch() -> None:
+        if args.command == "check":
+            cmd_check()
+        elif args.command == "login":
+            cmd_login()
+
+    run_cli(dispatch)
 
 
 if __name__ == "__main__":

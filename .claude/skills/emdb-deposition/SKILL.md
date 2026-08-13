@@ -12,6 +12,10 @@ Always call the scripts via Bash and read their structured JSON output;
 never write `onedep_lib` or `empiar_depositor` calls inline. The scripts
 were written once, reviewed, and unit-tested — trust them and use them as
 the interface, rather than re-deriving the API surface each conversation.
+Every script's `main()` guarantees this: any unexpected error, not just
+the ones each script explicitly checks for, still comes out as
+`{"success": false, "error": "..."}` on stdout rather than a raw Python
+traceback, so it's always safe to parse stdout as JSON.
 
 ## Scope: what this actually automates
 
@@ -145,17 +149,34 @@ codes, `experiment_type` codes, imageset `category` codes).
    Fix and re-run until `"ok": true`.
 
 2. **Confirm, then submit.** Same rule as EMDB: show the validation
-   result, get an explicit "yes" before adding `--confirm`. This step
-   uploads real data over Aspera or Globus and creates a live EMPIAR
-   entry.
+   result, get an explicit "yes" before adding `--confirm`. This step is
+   even more irreversible than it looks: `empiar-depositor` creates the
+   live EMPIAR entry via its API **before** attempting any data transfer,
+   so a failed/skipped transfer after this point still leaves a real,
+   citable-ID entry behind — there's no dry-run equivalent that avoids
+   that.
    ```bash
    .venv/bin/python3 .claude/skills/emdb-deposition/scripts/empiar_deposit.py submit --json-input depositions/<slug>/empiar/json_input.json --data-dir <path-to-data> --confirm
    ```
-   Optional flags: `--ascp <path>` (custom ascp location), `--globus
-   <uuid>` (use Globus instead of/as fallback to Aspera), `--thumbnail
-   <path>` (defaults to the related EMDB entry's image if omitted),
-   `--resume <entry_id> <entry_dir>` (resume an interrupted Aspera
-   upload).
+   `submit` refuses to run at all unless it can resolve a transfer method —
+   either `--ascp <path>` (or an auto-detected Aspera Connect install at
+   its OS-default location) or `--globus <uuid>`. This isn't optional
+   despite how the underlying CLI's own `--help` text reads:
+   `empiar-depositor` does **not** auto-detect an installed Aspera Connect
+   on its own, so omitting both would otherwise create a real EMPIAR entry
+   with no data uploaded and no clear error pointing at why. If `submit`
+   refuses for this reason, help the user find/install Aspera Connect or
+   set up `globus-cli` rather than working around it.
+
+   Other flags: `--thumbnail <path>` (defaults to the related EMDB entry's
+   image if omitted), `--resume <entry_id> <entry_dir>` (resume an
+   interrupted Aspera upload). On success, the JSON output includes
+   `entry_id`/`entry_directory` parsed from empiar-depositor's own output —
+   relay these to the user, they're the citable accession info. A sidecar
+   `<json_input>.submitted.json` marker is written next to the JSON_INPUT
+   file recording them; re-running `submit` against the same JSON_INPUT
+   after a successful run refuses unless you also pass `--force`, same
+   pattern as EMDB's `remote_dep_id` guard.
 
 3. If `submit` fails because `EMPIAR_API_TOKEN` or `EMPIAR_TRANSFER_PASS`
    isn't set, point the user at `references/setup_checklist.md` — don't

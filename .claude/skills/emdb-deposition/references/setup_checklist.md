@@ -70,12 +70,23 @@ repeat steps 1–4 to get a new token.
 
 ## 4. Install a transfer tool for EMPIAR
 
-EMPIAR uploads move over Aspera or Globus — pick one:
+EMPIAR uploads move over Aspera or Globus — this is **not optional** once
+you reach an EMPIAR submission: `empiar_deposit.py submit` refuses to run
+at all unless one of them resolves, because `empiar-depositor` creates the
+live EMPIAR entry via its API *before* attempting any transfer, and
+silently skips the transfer if neither is available — leaving a real,
+empty entry with no data uploaded and no obvious error pointing at why.
+Pick one:
 
-- **Aspera** (default): install IBM Aspera Connect, which provides the
-  `ascp` binary. https://www.ibm.com/aspera/connect/
+- **Aspera**: install IBM Aspera Connect, which provides the `ascp`
+  binary, at its default location for your OS
+  (`~/Applications/Aspera Connect.app/...` on macOS, `~/.aspera/connect/bin`
+  on Linux) — `empiar_deposit.py` auto-detects it there, so you don't need
+  to pass `--ascp` yourself once it's installed.
+  https://www.ibm.com/aspera/connect/
 - **Globus**: `pip install globus-cli==1.7.0` (or the version
-  `empiar-depositor` currently pins) and complete `globus login` once.
+  `empiar-depositor` currently pins) and complete `globus login` once, then
+  pass `--globus <your-uuid>` explicitly on `submit`.
 
 Only needed once you actually reach an EMPIAR deposition — not required to
 use the EMDB map deposition path.
