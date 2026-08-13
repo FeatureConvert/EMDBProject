@@ -9,3 +9,6 @@ depositions/
 
 # OS cruft
 .DS_Store
+
+# Claude Code harness session state - not project content
+.claude/scheduled_tasks.lock

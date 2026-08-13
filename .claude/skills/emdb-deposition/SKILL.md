@@ -160,23 +160,31 @@ codes, `experiment_type` codes, imageset `category` codes).
    ```
    `submit` refuses to run at all unless it can resolve a transfer method —
    either `--ascp <path>` (or an auto-detected Aspera Connect install at
-   its OS-default location) or `--globus <uuid>`. This isn't optional
-   despite how the underlying CLI's own `--help` text reads:
-   `empiar-depositor` does **not** auto-detect an installed Aspera Connect
-   on its own, so omitting both would otherwise create a real EMPIAR entry
-   with no data uploaded and no clear error pointing at why. If `submit`
-   refuses for this reason, help the user find/install Aspera Connect or
-   set up `globus-cli` rather than working around it.
+   its OS-default location) or `--globus <uuid>`. `empiar-depositor`'s own
+   CLI would also refuse without one of these (confirmed by reading its
+   source — it does **not**, despite this, auto-detect an installed
+   Aspera Connect the way its `--help` text might suggest), so this check
+   just fails faster with a clearer message. If `submit` refuses for this
+   reason, help the user find/install Aspera Connect or set up
+   `globus-cli` rather than working around it.
 
-   Other flags: `--thumbnail <path>` (defaults to the related EMDB entry's
-   image if omitted), `--resume <entry_id> <entry_dir>` (resume an
-   interrupted Aspera upload). On success, the JSON output includes
-   `entry_id`/`entry_directory` parsed from empiar-depositor's own output —
-   relay these to the user, they're the citable accession info. A sidecar
+   Other flags: `--thumbnail <path>` (no fallback if omitted — despite
+   what empiar-depositor's own `--help` text claims about defaulting to
+   the related EMDB entry's image, no code anywhere actually implements
+   that; if the user wants a thumbnail, get an explicit path), `--resume
+   <entry_id> <entry_dir>` (resume an interrupted Aspera upload against
+   the *same* entry — passing `--resume` bypasses the resubmission guard
+   below entirely, since resuming isn't a duplicate submission; don't also
+   pass `--force`, which has the opposite meaning). On success, the JSON
+   output includes `entry_id`/`entry_directory` parsed from
+   empiar-depositor's own output — relay these to the user, they're the
+   citable accession info. If a `warning` field is present, the entry ID
+   couldn't be parsed cleanly - surface that to the user rather than
+   treating the run as a normal success. A sidecar
    `<json_input>.submitted.json` marker is written next to the JSON_INPUT
    file recording them; re-running `submit` against the same JSON_INPUT
-   after a successful run refuses unless you also pass `--force`, same
-   pattern as EMDB's `remote_dep_id` guard.
+   after a successful run refuses unless you also pass `--force` (or
+   `--resume`, above), same pattern as EMDB's `remote_dep_id` guard.
 
 3. If `submit` fails because `EMPIAR_API_TOKEN` or `EMPIAR_TRANSFER_PASS`
    isn't set, point the user at `references/setup_checklist.md` — don't

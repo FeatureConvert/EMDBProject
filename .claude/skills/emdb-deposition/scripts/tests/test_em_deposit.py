@@ -287,6 +287,99 @@ def test_prepare_resumes_existing_session_without_reinit(mock_resume, mock_confi
     )
 
 
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_clears_stale_file_ids_when_session_is_recreated(mock_deposit_init, mock_config_cls, tmp_path):
+    # Reproduces the documented "session_id no longer exists locally"
+    # recovery path: a manifest can have file_id values left over from a
+    # session that no longer exists (session_id was deleted per
+    # troubleshooting.md's own advice). Since deposit_init() always starts
+    # a genuinely fresh session, those stale ids must not be trusted -
+    # otherwise the loop skips add_file() (id "already there") and then
+    # set_voxel_values() raises a KeyError against a session that has
+    # never actually seen that file.
+    mock_config_cls.load.return_value = _fake_config()
+    dep = MagicMock()
+    dep.session_id = "sess-new"
+    dep.add_file.side_effect = ["fid-new-1", "fid-new-2", "fid-new-3", "fid-new-4"]
+    mock_deposit_init.return_value = dep
+
+    manifest_path = _manifest(tmp_path)  # no session_id -> _open_deposition creates a fresh one
+    manifest = json.loads(manifest_path.read_text())
+    for i, f in enumerate(manifest["files"]):
+        f["file_id"] = f"stale-fid-{i}"  # left over from a since-deleted session
+    manifest_path.write_text(json.dumps(manifest))
+
+    em_deposit.cmd_prepare(str(manifest_path))
+
+    # every file must have been re-added against the new session, not
+    # skipped because a stale id was still present
+    assert dep.add_file.call_count == 4
+    saved = json.loads(manifest_path.read_text())
+    assert [f["file_id"] for f in saved["files"]] == ["fid-new-1", "fid-new-2", "fid-new-3", "fid-new-4"]
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_submit_prints_single_json_object_when_close_fails_after_failed_check(
+    mock_resume, mock_config_cls, tmp_path, capsys
+):
+    # Live-reproduced bug: dep.close() used to run in a `finally` shared
+    # with the check_required_files-failed branch's print_json()+sys.exit(1).
+    # If close() itself raised while that SystemExit was propagating,
+    # Python replaces the pending SystemExit with the close() exception -
+    # an Exception subclass, which run_cli then also converts to JSON,
+    # producing TWO JSON objects on one stdout stream. Fixed by closing
+    # (best-effort) before printing on this path, not after.
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+    dep = MagicMock()
+    issue = MagicMock()
+    issue.severity.value = "fatal"
+    issue.code = "REQ_FILES_MISSING"
+    issue.message = "a map file is required for em"
+    report = MagicMock()
+    report.ok = False
+    report.issues = [issue]
+    dep.check_required_files.return_value = report
+    dep.close.side_effect = RuntimeError("session store lock error")
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1")
+    with pytest.raises(SystemExit) as exc:
+        em_deposit.cmd_submit(str(manifest_path), confirm=True, force=False)
+    assert exc.value.code == 1
+
+    stdout = capsys.readouterr().out
+    # must be exactly one JSON object, not two concatenated together
+    obj = json.loads(stdout)
+    assert obj["success"] is False
+    assert "issues" in obj
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
+def test_submit_reports_dep_id_even_if_save_manifest_fails(mock_resume, mock_config_cls, tmp_path, capsys):
+    # deposit() has already happened for real - a failure persisting it to
+    # disk (permissions, disk full, concurrent writer) must not suppress
+    # reporting the real dep_id back to the caller.
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+    dep = MagicMock()
+    report = MagicMock()
+    report.ok = True
+    dep.check_required_files.return_value = report
+    dep.deposit.return_value = "D_8000000004"
+    dep.site_url = "https://deposit-pdbe.wwpdb.org/deposition/D_8000000004/"
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1")
+    with patch("em_deposit.save_manifest", side_effect=OSError("disk full")):
+        em_deposit.cmd_submit(str(manifest_path), confirm=True, force=False)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["remote_dep_id"] == "D_8000000004"
+
+
 def test_submit_refuses_without_confirm(tmp_path, capsys):
     manifest_path = _manifest(tmp_path, session_id="sess-1")
     with pytest.raises(SystemExit) as exc:

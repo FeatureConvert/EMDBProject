@@ -72,11 +72,9 @@ repeat steps 1–4 to get a new token.
 
 EMPIAR uploads move over Aspera or Globus — this is **not optional** once
 you reach an EMPIAR submission: `empiar_deposit.py submit` refuses to run
-at all unless one of them resolves, because `empiar-depositor` creates the
-live EMPIAR entry via its API *before* attempting any transfer, and
-silently skips the transfer if neither is available — leaving a real,
-empty entry with no data uploaded and no obvious error pointing at why.
-Pick one:
+at all unless one of them resolves. (`empiar-depositor`'s own CLI would
+also refuse without one — this project's wrapper just checks earlier, with
+a clearer message, and without spawning a subprocess.) Pick one:
 
 - **Aspera**: install IBM Aspera Connect, which provides the `ascp`
   binary, at its default location for your OS

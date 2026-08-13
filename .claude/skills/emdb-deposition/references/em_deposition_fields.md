@@ -48,7 +48,9 @@ the same.
 
 `SPA` (single particle), `HELICAL`, `SUBTOMOGRAM`, `TOMOGRAPHY`. Only
 SPA/HELICAL/SUBTOMOGRAM require exactly 2 half-maps per the bundled
-`required_files.json` schema — TOMOGRAPHY does not.
+`required_files.json` schema — TOMOGRAPHY does not. Accepts spaces or
+hyphens in place of underscores (`"single particle"`, `"single-particle"`,
+`"SPA"` all resolve the same way), matching `country`'s matching below.
 
 ## `country`
 

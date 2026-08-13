@@ -14,6 +14,73 @@ def test_require_fields_passes_when_all_present():
     common.require_fields({"a": 1, "b": 2}, ["a", "b"])  # must not raise
 
 
+def test_em_subtype_enum_normalizes_spaces_and_hyphens_like_country_enum():
+    # country_enum() already normalized "united kingdom"/"united-kingdom";
+    # em_subtype_enum() didn't, despite this project's own docs describing
+    # subtypes as "single particle" in prose (SKILL.md: "SPA / helical /
+    # subtomogram / tomography").
+    import onedep_lib as dsp
+
+    assert common.em_subtype_enum("single particle") == dsp.EMSubType.SPA
+    assert common.em_subtype_enum("single-particle") == dsp.EMSubType.SPA
+    assert common.em_subtype_enum("SPA") == dsp.EMSubType.SPA
+    assert common.em_subtype_enum("helical") == dsp.EMSubType.HELICAL
+
+
+def test_save_manifest_is_atomic(tmp_path):
+    # Matches onedep_lib's own JsonSessionStore._save() pattern: write to a
+    # temp file, then os.replace() - so a crash mid-write can't leave a
+    # truncated file that fails to parse on the next read.
+    path = tmp_path / "manifest.json"
+    common.save_manifest(path, {"a": 1})
+    assert json.loads(path.read_text()) == {"a": 1}
+    assert not (tmp_path / "manifest.json.tmp").exists()
+
+    common.save_manifest(path, {"a": 2})
+    assert json.loads(path.read_text()) == {"a": 2}
+
+
+def test_require_submission_safety_gates_checks_confirm_first():
+    with pytest.raises(SystemExit) as exc:
+        common.require_submission_safety_gates(
+            False, "dry-run", {"remote_dep_id": "D_1"}, "remote_dep_id", force=False, kind="deposition"
+        )
+    assert exc.value.code == 1
+
+
+def test_require_submission_safety_gates_checks_resubmission_second():
+    with pytest.raises(SystemExit) as exc:
+        common.require_submission_safety_gates(
+            True, "dry-run", {"remote_dep_id": "D_1"}, "remote_dep_id", force=False, kind="deposition"
+        )
+    assert exc.value.code == 1
+
+
+def test_require_submission_safety_gates_passes_when_both_satisfied():
+    common.require_submission_safety_gates(
+        True, "dry-run", {}, "remote_dep_id", force=False, kind="deposition"
+    )  # must not raise
+
+
+def test_load_optional_json_returns_empty_dict_when_missing(tmp_path):
+    assert common.load_optional_json(tmp_path / "nope.json") == {}
+
+
+def test_load_optional_json_reads_existing_file(tmp_path):
+    p = tmp_path / "marker.json"
+    p.write_text(json.dumps({"entry_id": "123"}))
+    assert common.load_optional_json(p) == {"entry_id": "123"}
+
+
+def test_load_optional_json_fails_cleanly_on_corrupt_file(tmp_path, capsys):
+    p = tmp_path / "marker.json"
+    p.write_text("{not valid json")
+    with pytest.raises(SystemExit):
+        common.load_optional_json(p, label="Marker")
+    out = json.loads(capsys.readouterr().out)
+    assert "Marker" in out["error"]
+
+
 def test_require_fields_fails_on_missing(capsys):
     with pytest.raises(SystemExit) as exc:
         common.require_fields({"a": 1}, ["a", "b"])

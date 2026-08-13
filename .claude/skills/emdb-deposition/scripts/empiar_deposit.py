@@ -25,15 +25,16 @@ afterward, but it is briefly visible to process-listing tools (`ps`, /proc)
 for that subprocess's lifetime. That's a limitation of the wrapped CLI, not
 something this wrapper can avoid.
 
-IMPORTANT: empiar-depositor creates the live EMPIAR entry via its API
-(create_new_deposition) BEFORE attempting any data transfer, and only
-transfers data if --ascp resolves to a real ascp binary or --globus is
-given - it does NOT auto-detect an installed Aspera Connect the way its
-own --help text might suggest. Omit both and you get a real, empty EMPIAR
-entry with no data uploaded, no clear error pointing at the actual cause.
-This script therefore requires that --ascp resolves (explicitly or via a
-best-effort default-location probe) or --globus is given, before it will
-shell out at all - see _resolve_ascp().
+Note on --ascp/--globus: empiar-depositor's own CLI already refuses to run
+at all (prints a message, exits 1, before creating anything) if neither is
+given - confirmed by reading its installed source. It does NOT, however,
+auto-detect an installed Aspera Connect the way its --help text might
+suggest, so this script does that extra step itself (see
+_default_ascp_path()) and requires --ascp/--globus to resolve before it
+will even shell out - purely to fail faster with a clearer message and
+without spawning a subprocess, not because skipping it would create a
+live entry with no data (it wouldn't - the wrapped CLI's own guard already
+prevents that).
 
 Usage:
   python3 empiar_deposit.py validate --json-input <path>
@@ -57,11 +58,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from common import (  # noqa: E402
     fail,
-    guard_resubmission,
     load_manifest,
+    load_optional_json,
     print_json,
     require_confirm,
+    require_submission_safety_gates,
     run_cli,
+    save_manifest,
 )
 
 _ENTRY_ID_RE = re.compile(r"Your entry ID is (\d+) and unique data directory is (\S+)")
@@ -138,11 +141,18 @@ def cmd_submit(
     thumbnail: str | None,
     resume: tuple[str, str] | None,
 ) -> None:
-    require_confirm(confirm, "validate")
-
     marker_path = _submitted_marker_path(json_input_path)
-    prior = json.loads(marker_path.read_text()) if marker_path.exists() else {}
-    guard_resubmission(prior, "entry_id", force, kind="EMPIAR entry")
+    if resume:
+        # --resume is specifically for continuing an interrupted transfer
+        # against the SAME entry the marker (if any) already recorded -
+        # that's not a duplicate submission, it's the documented recovery
+        # path, so the guard doesn't apply here. --force keeps its own
+        # documented meaning ("deliberately create a separate entry"),
+        # which would be the wrong thing to require for a resume.
+        require_confirm(confirm, "validate")
+    else:
+        prior = load_optional_json(marker_path, label="Submission marker")
+        require_submission_safety_gates(confirm, "validate", prior, "entry_id", force, kind="EMPIAR entry")
 
     token = os.environ.get("EMPIAR_API_TOKEN")
     if not token:
@@ -166,12 +176,11 @@ def cmd_submit(
     if not ascp and not globus:
         fail(
             "Neither --ascp resolved (no Aspera Connect found at the default "
-            "install location) nor --globus was given. empiar-depositor "
-            "creates the live EMPIAR entry via its API BEFORE attempting any "
-            "data transfer, and silently skips the transfer entirely if "
-            "neither is available - this would create a real, empty EMPIAR "
-            "entry with no data uploaded. Install Aspera Connect or "
-            "globus-cli, or pass --ascp/--globus explicitly, before retrying."
+            "install location) nor --globus was given. empiar-depositor's "
+            "own CLI would also refuse to run without one of these - this "
+            "check just fails faster with a clearer message, before "
+            "spawning a subprocess. Install Aspera Connect or globus-cli, "
+            "or pass --ascp/--globus explicitly, before retrying."
         )
 
     # Re-validate right before shelling out, in case the file was edited
@@ -211,26 +220,54 @@ def cmd_submit(
         return
 
     entry_id = entry_directory = None
+    warning = None
     match = _ENTRY_ID_RE.search(result.stdout)
     if match:
         entry_id, entry_directory = match.group(1), match.group(2)
-        marker_path.write_text(
-            json.dumps(
+    elif result.returncode == 0:
+        # returncode 0 but we couldn't parse an entry_id (empiar-depositor
+        # changed its stdout wording, or something equally unexpected) -
+        # still write a marker so a resubmission requires --force. Without
+        # this, guard_resubmission would see no marker next time and wave
+        # a retry straight through, creating a SECOND live EMPIAR entry -
+        # exactly what the guard exists to prevent, silently defeated by a
+        # parsing gap rather than an actual duplicate-submission attempt.
+        entry_id = f"unparsed-success-{datetime.now(tz=timezone.utc).isoformat()}"
+        warning = (
+            "submit reported success but the entry ID could not be parsed "
+            "from empiar-depositor's output - wrote a placeholder marker so "
+            "a resubmission still requires --force. Check stdout_tail and "
+            "your EMPIAR account manually to find the real entry before "
+            "retrying."
+        )
+
+    if result.returncode == 0:
+        # The live EMPIAR entry was already created by this point - a
+        # failure persisting the marker must not suppress reporting
+        # entry_id/entry_directory, which the user needs regardless.
+        try:
+            save_manifest(
+                marker_path,
                 {
                     "entry_id": entry_id,
                     "entry_directory": entry_directory,
                     "returncode": result.returncode,
                     "submitted_at": datetime.now(tz=timezone.utc).isoformat(),
                 },
-                indent=2,
             )
-        )
+        except Exception:  # noqa: BLE001
+            warning = (
+                (warning + " " if warning else "")
+                + "Additionally, failed to write the resubmission-guard marker file - "
+                "a retry will NOT be blocked automatically; check manually before resubmitting."
+            )
 
     print_json(
         {
             "success": result.returncode == 0,
             "entry_id": entry_id,
             "entry_directory": entry_directory,
+            "warning": warning,
             "command": redacted,
             "returncode": result.returncode,
             "stdout_tail": result.stdout[-4000:],

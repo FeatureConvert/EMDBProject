@@ -21,11 +21,22 @@ def _bundled_example() -> Path:
 
 
 def _submit(json_input, data_dir, **overrides):
+    # Always operate on a tmp_path-local copy, never the original path
+    # as-is: cmd_submit can write a sidecar `<json_input>.submitted.json`
+    # marker on a returncode-0 result, and several tests pass the bundled
+    # package fixture path directly - writing real files next to that
+    # shared, non-tmp location would pollute later test runs (and the
+    # installed package itself). This was a real bug caught by running the
+    # suite: a mocked "success" test left a stray .submitted.json marker
+    # next to empiar_depositor's own bundled example, which then made an
+    # unrelated later test see a false "already submitted" state.
+    isolated = Path(data_dir) / "json_input.json"
+    isolated.write_text(Path(json_input).read_text())
     kwargs = dict(
         confirm=True, force=False, ascp="/fake/ascp", globus=None, thumbnail=None, resume=None,
     )
     kwargs.update(overrides)
-    return empiar_deposit.cmd_submit(str(json_input), str(data_dir), **kwargs)
+    return empiar_deposit.cmd_submit(str(isolated), str(data_dir), **kwargs)
 
 
 def test_validate_accepts_bundled_real_example(capsys):
@@ -250,6 +261,57 @@ def test_submit_allows_resubmission_with_force(mock_run, tmp_path, monkeypatch, 
     _submit(json_input, tmp_path, force=True)  # must not raise
 
     mock_run.assert_called_once()
+
+
+@patch("subprocess.run")
+def test_submit_with_resume_bypasses_guard_without_force(mock_run, tmp_path, monkeypatch, capsys):
+    # --resume continues an interrupted transfer against the SAME entry a
+    # prior marker already recorded - that's the documented recovery path,
+    # not a duplicate submission, so it must proceed without --force (which
+    # has the opposite documented meaning: deliberately create a separate
+    # entry).
+    monkeypatch.setenv("EMPIAR_API_TOKEN", "tok123")
+    monkeypatch.setenv("EMPIAR_TRANSFER_PASS", "pass123")
+    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+
+    json_input = tmp_path / "json_input.json"
+    json_input.write_text(_bundled_example().read_text())
+    marker = json_input.with_suffix(".submitted.json")
+    marker.write_text(json.dumps({"entry_id": "12345", "entry_directory": "abcde12345"}))
+
+    _submit(json_input, tmp_path, force=False, resume=("12345", "abcde12345"))  # must not raise
+
+    mock_run.assert_called_once()
+    called_argv = mock_run.call_args.args[0]
+    assert "-r" in called_argv
+
+
+@patch("subprocess.run")
+def test_submit_writes_placeholder_marker_when_entry_id_unparseable(mock_run, tmp_path, monkeypatch, capsys):
+    # returncode 0 but stdout doesn't match the expected "Your entry ID is
+    # ..." format (e.g. empiar-depositor changes its wording) - this used
+    # to silently skip writing any marker at all, so a retry would sail
+    # through guard_resubmission and could create a second live entry.
+    monkeypatch.setenv("EMPIAR_API_TOKEN", "tok123")
+    monkeypatch.setenv("EMPIAR_TRANSFER_PASS", "pass123")
+    mock_run.return_value = MagicMock(returncode=0, stdout="unexpected new output format", stderr="")
+
+    json_input = tmp_path / "json_input.json"
+    json_input.write_text(_bundled_example().read_text())
+
+    _submit(json_input, tmp_path)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["warning"] is not None
+    assert "could not be parsed" in out["warning"]
+
+    marker = json_input.with_suffix(".submitted.json")
+    assert marker.exists()
+
+    # a follow-up submit against the same file must now be blocked without --force
+    with pytest.raises(SystemExit):
+        _submit(json_input, tmp_path, force=False)
 
 
 def test_main_converts_uncaught_exception_to_json(tmp_path, monkeypatch, capsys):

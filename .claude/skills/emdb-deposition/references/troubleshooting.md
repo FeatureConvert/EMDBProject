@@ -67,12 +67,12 @@ quote. The error includes the exact JSON parse failure location. (For
 `empiar_deposit.py`, the equivalent message says `JSON_INPUT at <path> is
 not valid JSON: ...` — both share the same underlying loader.)
 
-**`Manifest is missing required field(s): <list>`**
-Either the manifest itself is missing a top-level field (`email`, `users`,
-`country`, `em_subtype`, `files`), or — if the message is about a specific
-file entry — one of its `files[]` entries is missing `path`/`file_type`, or
-its `voxel` object is missing one of `spacing_x`/`spacing_y`/`spacing_z`/
-`contour`. Add the missing field(s) and re-run `prepare`.
+**`Manifest is missing required field(s): <list>`** (or, for a specific `files[]` entry: **`Each files[] entry is missing required field(s): <list>`**, or for a voxel block: **`voxel block for '<path>' is missing required field(s): <list>`**)
+`require_fields()`'s message includes a label saying exactly what's
+missing the field(s) — the manifest itself (top-level `email`, `users`,
+`country`, `em_subtype`, `files`), a specific `files[]` entry (`path`/
+`file_type`), or a specific file's `voxel` block (`spacing_x`/`spacing_y`/
+`spacing_z`/`contour`). Add the missing field(s) and re-run `prepare`.
 
 **`Manifest lists the same file path twice: '<path>' is used for both '<type1>' and '<type2>'. ...`**
 Two entries in `files[]` point at the same physical file. `onedep_lib`
@@ -108,19 +108,21 @@ you'll see it as a normal `{"success": false, "error": "FileNotFoundError:
 File not found: ..."}` JSON line rather than a raw traceback. Check for
 typos or a file that moved after the manifest was written.
 
-**`Manifest must be an object with fields [...], got NoneType: None`** (or similar)
-A manifest field that should be an object — most commonly `voxel` — was
-written as `null`, a string, or some other non-object value, often from an
-unfilled template field. Fix the manifest so that field is a proper JSON
-object with the expected sub-fields.
+**`voxel block for '<path>' must be an object with fields [...], got NoneType: None`** (or similar; the label varies by which field is wrong)
+A manifest field that should be an object — most commonly a file's `voxel`
+block — was written as `null`, a string, or some other non-object value,
+often from an unfilled template field. Fix the manifest so that field is a
+proper JSON object with the expected sub-fields.
 
 **`session_id '<id>' from the manifest no longer exists locally (~/.onedep/sessions). Remove session_id from the manifest and re-run prepare to start a new session.`**
 Local session state (under `~/.onedep/sessions`) was cleared, or you're
 running on a different machine than the one that ran `prepare`. If this
 deposition was never actually `submit`ted (no `remote_dep_id` in the
 manifest yet), it's safe to delete the `session_id` field and re-run
-`prepare` — it'll register all the files fresh. If it *was* already
-submitted, the remote deposition still exists on wwPDB (check its
+`prepare` — it'll register all the files fresh (`prepare` automatically
+clears any `file_id` values left over from the old session when it
+creates a new one, so you don't need to remove those by hand). If it *was*
+already submitted, the remote deposition still exists on wwPDB (check its
 `site_url`); you just can't resume the local staging session for it.
 
 **`dry-run` reports `"ok": false` with issues like these — what they mean:**
@@ -145,11 +147,11 @@ files will only surface at `submit`/server-processing time.
 Working as intended — this is the safety gate. Run `dry-run`, review the
 report, get explicit confirmation, then add `--confirm`.
 
-**`This manifest already has remote_dep_id='D_...'. Re-running submit will re-upload files against the existing deposition. Pass --force if that's intentional.`**
+**`This deposition already has remote_dep_id='D_...'. Re-running submit will re-run against the existing deposition. Pass --force if that's intentional.`**
 You (or the skill) already ran `submit` successfully once for this
 manifest. Re-running without `--force` is blocked because it would
-re-upload every file to the existing deposition — usually not what you
-want unless you're deliberately adding more files to it.
+re-run against the existing deposition — usually not what you want unless
+you're deliberately adding more files to it.
 
 ## Real API errors from `deposit()` / `status()` / `check_auth_key()`
 
@@ -187,7 +189,7 @@ reporting — it should be structurally impossible.
 Exactly what it says — see
 [setup_checklist.md](setup_checklist.md#3-empiar-access-only-needed-if-youre-also-depositing-raw-image-data).
 
-**`EMPIAR_TRANSFER_PASS is not set (this is the transfer password EMPIAR issued you, not your account password or API token).`**
+**`EMPIAR_TRANSFER_PASS is not set (this is the transfer password EMPIAR issued you, not your account password or API token). See references/setup_checklist.md.`**
 This is a *third*, separate credential from your EMPIAR password and API
 token — EMPIAR issues it specifically for data transfer. Check your email
 from the EMPIAR team, or ask EMPIAR support if you can't find it.
@@ -198,11 +200,12 @@ subdirectories matching each imageset's `directory` field in the
 JSON_INPUT.
 
 **`Neither --ascp resolved (no Aspera Connect found at the default install location) nor --globus was given. ...`**
-`empiar-depositor` creates the live EMPIAR entry via its API **before**
-attempting any data transfer, and silently skips the transfer entirely (no
-error of its own) if neither Aspera nor Globus is available — this check
-exists specifically to catch that before it happens, not after. Install
-Aspera Connect at its default OS location (see
+This is a wrapper-side convenience check, not a workaround for a real gap
+in `empiar-depositor` itself — its own CLI already refuses to run at all
+(confirmed by reading its installed source) if neither is available,
+before creating anything. This check just fails faster, with a clearer
+message, and without spawning a subprocess. Install Aspera Connect at its
+default OS location (see
 [setup_checklist.md](setup_checklist.md#4-install-a-transfer-tool-for-empiar))
 so it's auto-detected, or pass `--ascp /path/to/ascp` / `--globus <uuid>`
 explicitly.
@@ -213,7 +216,22 @@ sidecar `<json_input>.submitted.json` file records the entry_id from that
 run. Re-running without `--force` is blocked because empiar-depositor would
 attempt to create a *second* live entry and re-transfer the data. Pass
 `--force` only if that's genuinely intentional (e.g. depositing a
-deliberately separate entry from an edited copy of the same JSON_INPUT).
+deliberately separate entry from an edited copy of the same JSON_INPUT). If
+you're instead resuming an interrupted transfer against that *same* entry,
+use `--resume <entry_id> <entry_dir>` — that bypasses this guard entirely
+without needing `--force` (which would mean the opposite: a deliberately
+separate entry).
+
+**`submit` output includes a `warning` about the entry ID not being parseable, with a placeholder `entry_id` starting `unparsed-success-`**
+`submit` parses `entry_id`/`entry_directory` out of empiar-depositor's own
+stdout via a fixed pattern. If `returncode` was 0 but that pattern didn't
+match (e.g. a future empiar-depositor version changes its wording), a
+placeholder marker is written anyway so a resubmission is still blocked
+without `--force` — but you should check `stdout_tail` and your EMPIAR
+account directly to find the real entry, since this script doesn't have
+it. This is a should-never-happen safety net, not routine behavior; if you
+see it, the regex in `empiar_deposit.py` (`_ENTRY_ID_RE`) likely needs
+updating to match the new wording.
 
 **`JSON_INPUT failed schema validation - not submitting.` (with an `issues` list)**
 `submit` re-runs the same schema validation `validate` does, right before

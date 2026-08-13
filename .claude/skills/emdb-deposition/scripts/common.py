@@ -9,6 +9,7 @@ submit -> status), keyed by a local onedep_lib session_id once one exists.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,21 @@ def load_manifest(path: str | Path, label: str = "Manifest") -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
         fail(f"{label} not found: {p}")
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError as exc:
+        fail(f"{label} at {p} is not valid JSON: {exc}")
+    return {}  # unreachable, keeps type checkers happy
+
+
+def load_optional_json(path: str | Path, label: str = "File") -> dict[str, Any]:
+    """Like load_manifest, but returns {} instead of fail()ing when the file
+    doesn't exist yet - for sidecar state (e.g. a resubmission marker) that's
+    genuinely optional on a first run, while still giving a clean error (not
+    a raw JSONDecodeError traceback) if the file exists but is corrupt."""
+    p = Path(path)
+    if not p.exists():
+        return {}
     try:
         return json.loads(p.read_text())
     except json.JSONDecodeError as exc:
@@ -74,6 +90,18 @@ def guard_resubmission(state: dict[str, Any], id_field: str, force: bool, kind: 
         )
 
 
+def require_submission_safety_gates(
+    confirm: bool, review_cmd: str, state: dict[str, Any], id_field: str, force: bool, kind: str
+) -> None:
+    """Combine require_confirm() and guard_resubmission() - every current
+    hard-to-undo action in this project needs both, always in this order.
+    A future script copying the submit pattern by eye is one dropped call
+    away from silently permitting an unconfirmed or duplicate submission;
+    calling this one function instead removes that chance."""
+    require_confirm(confirm, review_cmd)
+    guard_resubmission(state, id_field, force, kind)
+
+
 def run_cli(dispatch) -> None:
     """Run `dispatch()` (a zero-arg callable that executes the selected
     subcommand), converting ANY uncaught exception into the same JSON error
@@ -97,9 +125,15 @@ def run_cli(dispatch) -> None:
 
 
 def save_manifest(path: str | Path, data: dict[str, Any]) -> None:
+    """Write JSON atomically (write to a temp file, then os.replace()) - the
+    same pattern onedep_lib's own JsonSessionStore._save() uses, so a crash
+    or kill mid-write leaves the previous good version intact instead of a
+    truncated file that fails to parse on the next read."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2, default=str))
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, default=str))
+    os.replace(tmp, p)
 
 
 # --- enum name -> onedep_lib enum member lookups -----------------------------
@@ -127,7 +161,11 @@ def country_enum(name: str):
 def em_subtype_enum(name: str):
     import onedep_lib as dsp
 
-    key = name.strip().upper()
+    # Normalize spaces/hyphens the same way country_enum() does - "single
+    # particle"/"single-particle" are natural phrasings (this project's own
+    # docs describe subtypes as "SPA / helical / subtomogram / tomography"
+    # in prose), so they should resolve the same as the underscored form.
+    key = name.strip().upper().replace(" ", "_").replace("-", "_")
     aliases = {"SINGLE_PARTICLE": "SPA", "SPA": "SPA"}
     key = aliases.get(key, key)
     try:

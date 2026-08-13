@@ -331,11 +331,11 @@ variables in your own shell (see
 [setup_checklist.md](.claude/skills/emdb-deposition/references/setup_checklist.md))
 and either Aspera Connect (`ascp`) or `globus-cli` installed for the
 actual data transfer — **this is required, not optional**: `submit`
-refuses to run at all without one of them, because `empiar-depositor`
-creates the live EMPIAR entry via its API *before* attempting any
-transfer, and would otherwise silently create a real, empty entry with no
-data uploaded. If Aspera Connect is installed at its OS-default location,
-it's auto-detected — no `--ascp` flag needed.
+refuses to run at all without one of them. (`empiar-depositor`'s own CLI
+would also refuse without one — this check just fails faster with a
+clearer message, before spawning a subprocess.) If Aspera Connect is
+installed at its OS-default location, it's auto-detected — no `--ascp`
+flag needed.
 
 ### Step 4 — submit
 
@@ -356,6 +356,7 @@ server-side before any data transfer starts, so there's no equivalent of
   "success": true,
   "entry_id": "12345",
   "entry_directory": "abcde12345",
+  "warning": null,
   "command": ["...", "***", "..."],
   "returncode": 0,
   "stdout_tail": "...",
@@ -364,17 +365,24 @@ server-side before any data transfer starts, so there's no equivalent of
 ```
 
 `entry_id`/`entry_directory` are parsed from empiar-depositor's own output
-— relay these to whoever needs the citable accession info. A sidecar
+— relay these to whoever needs the citable accession info. If `warning` is
+non-null, the entry ID couldn't be parsed cleanly from the output — don't
+treat that run as a routine success; check `stdout_tail` and the user's
+EMPIAR account directly. A sidecar
 `depositions/my-protein-2026-08/empiar/json_input.submitted.json` file
-records them; re-running `submit` against the same JSON_INPUT afterward
-refuses unless you also pass `--force`, same pattern as EMDB's
+records the entry info; re-running `submit` against the same JSON_INPUT
+afterward refuses unless you also pass `--force`, same pattern as EMDB's
 `remote_dep_id` guard.
 
 Useful optional flags: `--ascp /path/to/ascp` (non-default Aspera
 location), `--globus <uuid>` (use Globus instead of/as a fallback to
-Aspera), `--thumbnail /path/to/image.png` (defaults to the related EMDB
-entry's image if omitted), `--resume <entry_id> <entry_dir>` (continue an
-interrupted Aspera upload rather than starting over).
+Aspera), `--thumbnail /path/to/image.png` (no fallback if omitted — despite
+what empiar-depositor's `--help` text claims, nothing actually defaults
+this to the related EMDB entry's image), `--resume <entry_id> <entry_dir>`
+(continue an interrupted Aspera upload against the *same* entry rather than
+starting over — bypasses the resubmission guard above entirely, since
+resuming isn't a duplicate submission; don't combine with `--force`, which
+means the opposite).
 
 ## Running the tests
 

@@ -47,11 +47,10 @@ from common import (  # noqa: E402
     em_subtype_enum,
     fail,
     file_type_enum,
-    guard_resubmission,
     load_manifest,
     print_json,
-    require_confirm,
     require_fields,
+    require_submission_safety_gates,
     run_cli,
     save_manifest,
 )
@@ -84,6 +83,23 @@ def _require_session(manifest: dict) -> None:
 
 def _issues_json(report) -> list[dict]:
     return [{"severity": i.severity.value, "code": i.code, "message": i.message} for i in report.issues]
+
+
+def _close_quietly(dep) -> None:
+    """Best-effort close, once we already have a real result to report.
+
+    onedep_lib's current close() is a no-op that can't actually raise, but
+    nothing guarantees that stays true in a future version, and relying on
+    a third-party implementation detail for correctness is the wrong bet -
+    a cleanup problem must never turn an already-completed, hard-to-undo
+    action (or an already-computed, harmless read like check_required_files)
+    into a reported failure. Call this ONLY after the real work for this
+    command has already succeeded; a failure that happens before that point
+    should still close-and-reraise so it propagates normally."""
+    try:
+        dep.close()
+    except Exception:  # noqa: BLE001 - deliberately swallow, see docstring
+        pass
 
 
 def _open_deposition(manifest: dict, config):
@@ -152,6 +168,16 @@ def cmd_prepare(manifest_path: str) -> None:
     dep, created = _open_deposition(manifest, config)
     if created:
         manifest["session_id"] = dep.session_id
+        # A fresh session means any file_id values already recorded in the
+        # manifest belong to a previous, now-gone session (e.g. a user
+        # followed the "session_id no longer exists locally" recovery
+        # advice and deleted just session_id). Those ids don't exist in
+        # THIS session's store - clear them so the loop below re-registers
+        # every file, instead of skipping add_file() and then crashing in
+        # set_voxel_values() with a KeyError for an id the new session has
+        # never seen.
+        for entry in files:
+            entry.pop("file_id", None)
         save_manifest(manifest_path, manifest)
 
     try:
@@ -185,10 +211,14 @@ def cmd_prepare(manifest_path: str) -> None:
                     entry["file_id"],
                     **{field: float(voxel[field]) for field in VOXEL_FIELDS},
                 )
-    finally:
-        dep.close()
+    except BaseException:
+        _close_quietly(dep)
+        raise
 
-    save_manifest(manifest_path, manifest)
+    # Everything succeeded and is already durably saved (incrementally,
+    # above) - a cleanup problem here must not turn a real success into a
+    # reported failure.
+    _close_quietly(dep)
     print_json(
         {
             "success": True,
@@ -206,8 +236,10 @@ def cmd_dry_run(manifest_path: str) -> None:
 
     try:
         report = dep.check_required_files()
-    finally:
-        dep.close()
+    except BaseException:
+        _close_quietly(dep)
+        raise
+    _close_quietly(dep)
 
     print_json({"ok": report.ok, "issues": _issues_json(report)})
     if not report.ok:
@@ -217,8 +249,7 @@ def cmd_dry_run(manifest_path: str) -> None:
 def cmd_submit(manifest_path: str, confirm: bool, force: bool) -> None:
     manifest = load_manifest(manifest_path)
     _require_session(manifest)
-    require_confirm(confirm, "dry-run")
-    guard_resubmission(manifest, "remote_dep_id", force, kind="deposition")
+    require_submission_safety_gates(confirm, "dry-run", manifest, "remote_dep_id", force, kind="deposition")
 
     config = _build_config()
     _require_auth(config)
@@ -226,38 +257,60 @@ def cmd_submit(manifest_path: str, confirm: bool, force: bool) -> None:
 
     try:
         report = dep.check_required_files()
-        if not report.ok:
-            print_json(
-                {
-                    "success": False,
-                    "error": "check_required_files failed - not submitting.",
-                    "issues": _issues_json(report),
-                }
-            )
-            sys.exit(1)
+    except BaseException:
+        _close_quietly(dep)
+        raise
 
+    if not report.ok:
+        # Close BEFORE printing, not in a shared finally after: closing
+        # inside the same try/finally as this print used to risk close()
+        # raising while the pending sys.exit(1) below was propagating,
+        # which replaces that SystemExit with the close() exception -
+        # an Exception subclass, so run_cli's handler would catch it and
+        # print a SECOND, unrelated JSON object after this one. Verified
+        # this was reproducible before the fix (mocked dep.close() to
+        # raise on this exact path).
+        _close_quietly(dep)
+        print_json(
+            {
+                "success": False,
+                "error": "check_required_files failed - not submitting.",
+                "issues": _issues_json(report),
+            }
+        )
+        sys.exit(1)
+
+    try:
         dep_id = dep.deposit()
-        # Persist remote_dep_id IMMEDIATELY - deposit() has already happened
-        # for real at this point. If site_url access or close() below raised
-        # before this got saved, the manifest would show no remote_dep_id,
-        # and guard_resubmission() above would then wave a retry straight
-        # through to re-upload against the now-live deposition.
-        manifest["remote_dep_id"] = dep_id
-        save_manifest(manifest_path, manifest)
+    except BaseException:
+        _close_quietly(dep)
+        raise
 
-        # dep_id is already real and saved above - don't let a problem
-        # reading/closing the session turn a successful submission into a
-        # reported failure. Best-effort only past this point.
-        try:
-            site_url = dep.site_url
-        except Exception:  # noqa: BLE001 - deliberately swallow, see comment above
-            site_url = None
-    finally:
-        dep.close()
+    # deposit() has already happened for real on wwPDB at this point -
+    # nothing from here on may suppress reporting dep_id. Each remaining
+    # step (persisting it, reading site_url, closing) is independently
+    # best-effort so a failure in one doesn't hide that the submission
+    # itself succeeded.
+    manifest["remote_dep_id"] = dep_id
+    try:
+        save_manifest(manifest_path, manifest)
+    except Exception:  # noqa: BLE001 - dep_id is still reported below even if this fails
+        pass
+
+    site_url = None
+    try:
+        site_url = dep.site_url
+    except Exception:  # noqa: BLE001
+        pass
+
+    _close_quietly(dep)
 
     if site_url:
         manifest["site_url"] = site_url
-        save_manifest(manifest_path, manifest)
+        try:
+            save_manifest(manifest_path, manifest)
+        except Exception:  # noqa: BLE001
+            pass
 
     print_json(
         {
@@ -286,8 +339,10 @@ def cmd_status(manifest_path: str) -> None:
     dep, _ = _open_deposition(manifest, config)
     try:
         status = dep.get_status()
-    finally:
-        dep.close()
+    except BaseException:
+        _close_quietly(dep)
+        raise
+    _close_quietly(dep)
 
     base = {"remote_dep_id": manifest["remote_dep_id"], "site_url": manifest.get("site_url")}
     if hasattr(status, "status"):
