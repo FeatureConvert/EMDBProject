@@ -860,6 +860,29 @@ def test_status_closes_session_even_when_get_status_raises(mock_resume, mock_con
 
 @patch("onedep_lib.config.DepositConfig")
 @patch("onedep_lib.deposit_resume")
+def test_status_reports_plain_string_status(mock_resume, mock_config_cls, tmp_path, capsys):
+    # DepositStatus.status is a plain str field (coerced via str() in
+    # __post_init__), never an enum - cmd_status must print it as-is rather
+    # than assuming a `.value` attribute.
+    mock_config_cls.load.return_value = _fake_config(authenticated=True)
+
+    class FakeDepositStatus:
+        status = "processing"
+
+    dep = MagicMock()
+    dep.get_status.return_value = FakeDepositStatus()
+    mock_resume.return_value = dep
+
+    manifest_path = _manifest(tmp_path, session_id="sess-1", remote_dep_id="D_1")
+    em_deposit.cmd_status(str(manifest_path))
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "processing"
+    dep.close.assert_called_once()
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_resume")
 def test_submit_does_not_deposit_when_required_files_missing(mock_resume, mock_config_cls, tmp_path, capsys):
     mock_config_cls.load.return_value = _fake_config(authenticated=True)
     dep = MagicMock()

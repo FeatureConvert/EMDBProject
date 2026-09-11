@@ -646,7 +646,7 @@ def cmd_status(manifest_path: str) -> None:
 
     base = {"remote_dep_id": manifest["remote_dep_id"], "site_url": manifest.get("site_url")}
     if hasattr(status, "status"):
-        print_json({**base, "status": status.status.value})
+        print_json({**base, "status": status.status})
     else:
         # get_status() can return a DepositError instead of raising - exit
         # non-zero so callers checking the exit code (not just scanning for
