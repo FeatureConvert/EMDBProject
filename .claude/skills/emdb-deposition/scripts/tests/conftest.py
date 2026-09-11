@@ -42,7 +42,10 @@ def fails_json(capsys):
     exactly one JSON object on stdout with "success": false, and each given
     substring present in the error message. Returns the parsed object. One
     definition so the many call sites can't drift in how strictly they check
-    the contract. Usage: `fails_json(lambda: cmd(...), "expected substring")`.
+    the contract. Each substring must appear somewhere in the error message or
+    the `issues` list (so it works for both a plain fail() message and a
+    schema-validation failure that carries the detail in `issues`). Usage:
+    `fails_json(lambda: cmd(...), "expected substring")`.
     """
 
     def _run(fn, *substrings: str) -> dict:
@@ -51,8 +54,11 @@ def fails_json(capsys):
         assert exc.value.code == 1
         obj = json.loads(capsys.readouterr().out)  # raises unless stdout is one JSON object
         assert obj["success"] is False
+        haystack = obj.get("error", "")
+        if "issues" in obj:
+            haystack += " " + json.dumps(obj["issues"])
         for substring in substrings:
-            assert substring in obj["error"], f"{substring!r} not in {obj['error']!r}"
+            assert substring in haystack, f"{substring!r} not in {haystack!r}"
         return obj
 
     return _run

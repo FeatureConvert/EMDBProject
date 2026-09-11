@@ -2,10 +2,14 @@
 
 Researched while working autonomously (the user was away) — these are real
 options, not vague brainstorming, but they involve scope/design decisions
-that are the user's to make, not something to build unsupervised. Nothing
-below has been implemented. See [`list_depositions.py`](.claude/skills/emdb-deposition/scripts/list_depositions.py)
-for one small, unambiguous addition that *was* built this pass, and the
-"considered and rejected" note at the end for one that deliberately wasn't.
+that are the user's to make, not something to build unsupervised. See
+[`list_depositions.py`](.claude/skills/emdb-deposition/scripts/list_depositions.py)
+for one small, unambiguous addition, and the "considered and rejected" note
+at the end for one that deliberately wasn't.
+
+**Status update:** items **4** (local MRC header sniff) and **5** (a JSON
+Schema for `manifest.json`) have since been **implemented** — see the
+`DONE` markers on each. Items 1–3 remain open pending the user's call.
 
 ## 1. Composite map deposition support
 
@@ -77,49 +81,39 @@ alongside item 1 (composite maps) or a "look up related entry" feature no
 one has asked for yet. **Recommendation:** revisit only if item 1 happens,
 or if the user has a concrete lookup need.
 
-## 4. Local sanity-check map file contents before registering
+## 4. Local sanity-check map file contents before registering — DONE
 
-**What it is:** `em_deposit.py prepare` currently checks that a file
-*exists* at the given path (via `onedep_lib`'s own `add_file()`), but
-never checks it's actually a valid MRC/CCP4 map file - a wrong file
-extension, a truncated download, or a mixed-up path would only surface
-much later, either at `deposit()`/upload time or at wwPDB's own
-server-side validation.
+**Status: implemented.** `em_deposit.py` now sniffs each map-like file's
+fixed 1024-byte MRC2014/CCP4 header (stdlib `struct` only, no full-file
+parse, no new dependency) during `prepare`/`preview` and before any session
+is opened. It rejects a file smaller than the header, a file missing the
+`MAP ` stamp at byte 208, or one whose header reports non-positive
+dimensions — catching a wrong extension, a truncated download, or a
+mixed-up path locally. `preview` shows the sniffed header (dimensions, data
+mode, stamp) for each map file. See `_sniff_mrc()` in
+[`em_deposit.py`](.claude/skills/emdb-deposition/scripts/em_deposit.py).
 
-**What a real fix would look like:** MRC files have a fixed, well-known
-1024-byte header (dimensions, mode, cell size, and a `MAP `/`MAP\0` magic
-string at byte offset 208 in the modern MRC2014 format) - a lightweight
-header sniff (no full-file parse, no new heavy dependency) could catch
-"this isn't actually an MRC file" or "the header claims 0 dimensions"
-locally, matching this project's existing philosophy of catching what it
-can before wwPDB does (see `references/em_deposition_fields.md`'s "what we
-deliberately did *not* validate locally" section, which already flags
-this exact gap).
+**Not done (still the header only):** the sniff does not read the density
+body, so it can't detect a valid-header-but-corrupt-data file — that still
+surfaces at upload / wwPDB server-side validation.
 
-**Effort:** Small-medium (the MRC2014 header format is simple and
-well-documented; no new dependency needed, just `struct` from the
-standard library). **Value:** Real, moderate - catches a genuine class of
-mistake (wrong file, corrupted download) that currently isn't caught
-until much later in the workflow. **Recommendation:** worth doing; lowest
-risk/effort-to-value ratio of everything on this list. Good candidate for
-a focused follow-up session.
+## 5. Richer manifest-level validation — partially DONE
 
-## 5. Richer manifest-level validation
+**Status: the JSON Schema is implemented.** `manifest.json` is now validated
+against a Draft-7 schema
+([`scripts/manifest.schema.json`](.claude/skills/emdb-deposition/scripts/manifest.schema.json))
+via `jsonschema` — the same mechanism the EMPIAR side already used for
+JSON_INPUT — replacing the ad-hoc `require_fields()`/isinstance checks that
+were scattered through `em_deposit.py`. The schema doubles as precise,
+readable documentation of the manifest format. It enforces required fields,
+types, non-empty `users`/`files`, and `coordinates` being a real boolean;
+enum resolution, voxel finiteness, and the MRC sniff remain as semantic
+checks the schema can't express.
 
-Smaller polish items noticed while building/testing this project, none
-individually urgent:
-- ORCID iD format validation (`0000-0002-XXXX-XXXX` with a checksum digit)
-  before it reaches `onedep_lib` - currently any string is accepted and
-  passed through as-is.
-- Email format sanity check (currently unvalidated, same reasoning as
-  ORCID above - would surface late otherwise).
-- A JSON Schema file for `manifest.json` itself (this project has a
-  emdb-empiar upstream JSON schema for EMPIAR's JSON_INPUT already
-  bundled and used; the EMDB-side manifest format is currently documented
-  only in prose in `references/em_deposition_fields.md` and enforced
-  ad hoc via `require_fields()` calls scattered through `em_deposit.py`).
-  A real schema would make validation more uniform and would double as
-  precise, generated documentation.
+**Still open (deliberately not built):**
+- ORCID iD *format* validation (`0000-0002-XXXX-XXXX` with a checksum
+  digit) — any non-empty string is still accepted.
+- Email *format* sanity check — presence/type only.
 
 **Effort:** Small each. **Value:** Moderate, mostly UX polish rather than
 closing a real gap. **Recommendation:** low priority; fine to defer

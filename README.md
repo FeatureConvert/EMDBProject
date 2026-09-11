@@ -544,10 +544,14 @@ non-finite (`NaN`/`Infinity`) and boolean voxel values silently passing
 through; local manifest validation that ran only after a remote session was
 already created; and all four scripts now routing every uncaught exception,
 including CLI usage errors, through one shared JSON safety net
-(`common.run_cli()`/`JsonArgumentParser`). 124 tests currently pass. See
-[`ROADMAP.md`](ROADMAP.md) for researched-but-not-yet-built expansion
-ideas (composite maps, other experiment types, local file-content
-validation) and one idea that was investigated and deliberately rejected.
-Real `submit`/transfer has not yet been exercised against production
-wwPDB/EMPIAR — that only happens when you're ready with an actual
-deposition.
+(`common.run_cli()`/`JsonArgumentParser`). A pre-submission `preview` step
+now writes a human-readable review of the exact payload before any real
+submission, manifest structure is validated against a JSON Schema
+(`scripts/manifest.schema.json`), and map files get a local MRC2014/CCP4
+header sniff before upload. 128 tests currently pass. See
+[`ROADMAP.md`](ROADMAP.md) for the remaining expansion ideas (composite
+maps, other experiment types, read-only lookups; the local-file-validation
+and manifest-schema items are now implemented) and one idea that was
+investigated and deliberately rejected. Real `submit`/transfer has not yet
+been exercised against production wwPDB/EMPIAR — that only happens when
+you're ready with an actual deposition.

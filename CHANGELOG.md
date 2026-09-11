@@ -4,7 +4,43 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 is pre-release and not yet versioned.
 
-## [Unreleased] — 2026-09-11
+## [Unreleased] — 2026-09-11 (part 2: roadmap items 4 & 5)
+
+Implemented two researched roadmap items: a local MRC map-file header check
+and a JSON Schema for the manifest.
+
+### Added
+
+- **Local MRC2014/CCP4 header sniff** (ROADMAP item 4). `em_deposit.py`
+  reads each map-like file's fixed 1024-byte header (stdlib `struct`, no
+  full-file parse) during `prepare`/`preview`, before any session is opened,
+  and rejects a file that is smaller than the header, lacks the `MAP ` stamp
+  at byte 208, or reports non-positive dimensions — catching a truncated
+  download, wrong extension, or mixed-up path locally. `preview` shows the
+  sniffed header (dimensions, data mode, stamp) per map file.
+- **`manifest.schema.json`** (ROADMAP item 5): a Draft-7 JSON Schema for the
+  EMDB manifest, enforced with `jsonschema` (already a dependency), doubling
+  as precise documentation of the format.
+
+### Changed
+
+- `em_deposit.py` manifest validation now delegates structural checks
+  (required fields, types, array shape, `coordinates` boolean) to the JSON
+  Schema, via a shared `common.iter_schema_issues()` helper that the EMPIAR
+  JSON_INPUT validator now also uses. The hand-rolled `require_fields` /
+  isinstance / `require_type` manifest checks are retired; enum resolution,
+  voxel finiteness, and the MRC sniff remain as semantic checks the schema
+  can't express. Schema failures are reported as the standard
+  `{"success": false, "error": ..., "issues": [...]}` shape.
+
+### Internal / tests
+
+- Added tests for the MRC sniff (too-small, missing stamp, non-positive
+  dims, and the preview header summary) and for schema-driven manifest
+  errors; the `fails_json` fixture now matches substrings against the
+  `issues` list as well as the error message. 124 → 128 tests, all passing.
+
+## [Unreleased] — 2026-09-11 (part 1: review fixes + preview)
 
 A max-effort multi-angle code review of the previous change set (10 finder
 angles + verification + gap sweep), followed by fixing every confirmed

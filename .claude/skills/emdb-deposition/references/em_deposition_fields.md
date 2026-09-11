@@ -62,12 +62,32 @@ the exact wwPDB display string (`"United Kingdom"`, `"United States"`).
 See `onedep_lib.Country` for the full list — it's every ISO country, so
 just ask the depositor for their country and match loosely.
 
+## Local manifest validation
+
+Before any onedep_lib session is opened, `prepare` (and `preview`) validate
+the manifest locally so a mistake fails cleanly instead of leaving an
+orphaned session behind:
+
+- **Structure** is checked against a JSON Schema
+  (`scripts/manifest.schema.json`, Draft-7, enforced with `jsonschema` — the
+  same mechanism the EMPIAR side uses for JSON_INPUT): required fields,
+  types, non-empty `users`/`files` arrays, and `coordinates` being a real
+  JSON boolean (so the string `"false"` is rejected, not coerced to `True`).
+- **Enums** (`country`, `em_subtype`, per-file `file_type`) are resolved
+  case-insensitively to the onedep_lib enums; an unknown value fails here.
+- **Voxel/contour** values are checked to be real, finite numbers (booleans,
+  `NaN`/`Infinity`, and non-numeric values are rejected) for map-like files.
+- **Map files** get a lightweight MRC2014/CCP4 header sniff (the fixed
+  1024-byte header only — the `MAP ` stamp at byte 208 and positive
+  dimensions), catching a truncated download, a wrong extension, or a
+  mixed-up path before upload. `preview` shows the sniffed header
+  (dimensions, data mode, stamp) for each map file.
+
 ## What we deliberately did *not* validate locally
 
-`check_required_files()` only checks the required-file-type schema (which
-types and how many of each). Beyond that, the script validates voxel/contour
-values are real, finite numbers (see above) and that `email`/`users` have
-the right JSON shape, but it does **not** validate map file *contents* or
-ORCID ID *format*. A corrupt map file, or a syntactically-wrong ORCID, will
-surface later — either from `deposit()`'s upload/processing step or from
-wwPDB's own server-side validation — not from this script.
+The MRC sniff reads only the header, not the full map, so it does **not**
+verify the density data itself, and it does **not** validate ORCID iD
+*format* (any non-empty string is accepted). A corrupt map body, or a
+syntactically-wrong ORCID, will surface later — either from `deposit()`'s
+upload/processing step or from wwPDB's own server-side validation — not from
+this script.
