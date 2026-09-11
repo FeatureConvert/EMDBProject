@@ -65,7 +65,9 @@ just ask the depositor for their country and match loosely.
 ## What we deliberately did *not* validate locally
 
 `check_required_files()` only checks the required-file-type schema (which
-types and how many of each). It does **not** validate map file contents,
-voxel/contour numeric sanity, or ORCID ID format. Bad numbers or corrupt
-files will surface later, either from `deposit()`'s upload/processing step
-or from wwPDB's own server-side validation — not from this script.
+types and how many of each). Beyond that, the script validates voxel/contour
+values are real, finite numbers (see above) and that `email`/`users` have
+the right JSON shape, but it does **not** validate map file *contents* or
+ORCID ID *format*. A corrupt map file, or a syntactically-wrong ORCID, will
+surface later — either from `deposit()`'s upload/processing step or from
+wwPDB's own server-side validation — not from this script.

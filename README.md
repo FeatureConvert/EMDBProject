@@ -18,6 +18,7 @@ libraries (`onedep_lib`, `empiar-depositor`) instead of browser automation.
 - [Citing](#citing)
 - [Status](#status)
 - [Roadmap](ROADMAP.md)
+- [Changelog](CHANGELOG.md)
 
 ## Why
 
@@ -35,8 +36,8 @@ unnecessary once we found these.
 ├── requirements.txt
 ├── scripts/
 │   ├── auth_setup.py                 # check/bootstrap wwPDB OneDep authentication
-│   ├── em_deposit.py                 # EMDB map deposition: prepare / dry-run / submit / status
-│   ├── empiar_deposit.py             # EMPIAR raw-data deposition: validate / submit
+│   ├── em_deposit.py                 # EMDB map deposition: prepare / preview / dry-run / submit / status
+│   ├── empiar_deposit.py             # EMPIAR raw-data deposition: validate / preview / submit
 │   ├── list_depositions.py           # read-only: summarize every local deposition's state at a glance
 │   ├── common.py                     # shared manifest/validation/safety-gate helpers
 │   └── tests/                        # unit tests for every script, mocking both libraries entirely
@@ -200,7 +201,23 @@ listed in the manifest, and writes the resulting `session_id` and per-file
 Safe to re-run any time you change the manifest (add a file, fix a voxel
 value) — it won't duplicate already-registered files.
 
-### Step 3 — dry-run
+### Step 3 — preview (review exactly what will be sent)
+
+```bash
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/em_deposit.py preview \
+  --manifest depositions/my-protein-2026-08/manifest.json
+```
+
+Local-only, read-only, no network. Writes
+`depositions/my-protein-2026-08/submission_preview.md` (and returns the same
+Markdown in the JSON `preview_markdown` field) — a human-readable rendering
+of the values *as they'll be submitted*: country and EM subtype resolved to
+their canonical forms, voxel numbers as the coerced floats, and each file's
+on-disk size (or a `MISSING` flag if a path doesn't resolve). Open that file
+and confirm it matches your intent before you submit. It's a faithful view
+of the script's inputs, not a byte-level capture of the wwPDB API request.
+
+### Step 4 — dry-run
 
 ```bash
 .venv/bin/python3 .claude/skills/emdb-deposition/scripts/em_deposit.py dry-run \
@@ -230,13 +247,13 @@ e.g.:
 Fix the manifest and re-run `prepare` then `dry-run` until `"ok": true`.
 Don't move on until it is — `submit` will refuse otherwise anyway.
 
-### Step 4 — authenticate (first time only)
+### Step 5 — authenticate (first time only)
 
 If `auth_setup.py check` reported `authenticated: false` earlier, do that
 now — see [setup_checklist.md](.claude/skills/emdb-deposition/references/setup_checklist.md).
 This is the only step in the whole flow that needs your own browser.
 
-### Step 5 — submit
+### Step 6 — submit
 
 This is the one real, hard-to-undo step — it creates a live deposition on
 wwPDB's **production** system (there's no sandbox to rehearse against).
@@ -261,7 +278,7 @@ If you (or the skill, in a conversation) run `submit` again against a
 manifest that already has a `remote_dep_id`, it'll refuse again unless you
 add `--force`, since that would re-upload everything.
 
-### Step 6 — go finish the entry in the OneDep web UI
+### Step 7 — go finish the entry in the OneDep web UI
 
 Open the `site_url` from the previous step. This tool doesn't cover the
 five detailed experimental sections (Specimen Preparation, Microscopy,
@@ -328,7 +345,24 @@ Local-only, no network. `{"ok": true, "issues": []}` means it's
 structurally valid; otherwise you get a list of `{"path", "message"}`
 pairs telling you exactly which field is wrong.
 
-### Step 3 — set up transfer credentials
+### Step 3 — preview (review exactly what will be sent)
+
+```bash
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/empiar_deposit.py preview \
+  --json-input depositions/my-protein-2026-08/empiar/json_input.json \
+  --data-dir /path/to/raw/data
+```
+
+Local-only, read-only, no transfer. Writes
+`depositions/my-protein-2026-08/empiar/json_input.preview.md` (and returns
+the same Markdown in `preview_markdown`): the schema result, the title, each
+imageset and its referenced directory (resolved under `--data-dir` when
+given, so you can confirm the data is where EMPIAR will look for it), and
+the full pretty-printed JSON_INPUT payload. Since JSON_INPUT *is* the
+submission format, this is exactly what `submit` sends. `--data-dir` is
+optional here (it only enables the directory-existence check).
+
+### Step 4 — set up transfer credentials
 
 You need `EMPIAR_API_TOKEN` and `EMPIAR_TRANSFER_PASS` set as environment
 variables in your own shell (see
@@ -341,7 +375,7 @@ clearer message, before spawning a subprocess.) If Aspera Connect is
 installed at its OS-default location, it's auto-detected — no `--ascp`
 flag needed.
 
-### Step 4 — submit
+### Step 5 — submit
 
 Real upload, real EMPIAR entry creation — confirm you mean it. This is
 even more irreversible than EMDB's `submit`: the entry gets created
@@ -486,7 +520,7 @@ project's work, cite the underlying systems it wraps, not just this repo:
   Bank: the single global archive for 3D macromolecular structure data."
   *Nucleic Acids Research* 47(D1):D520–D528 (2019).
   [doi:10.1093/nar/gky949](https://doi.org/10.1093/nar/gky949)
-- **`onedep_lib`**: [github.com/wwPDB/onedep_lib](https://github.com/wwPDB/onedep_lib) (MIT-licensed, per its `LICENSE` file)
+- **`onedep_lib`**: [github.com/wwPDB/onedep_lib](https://github.com/wwPDB/onedep_lib) (Apache 2.0-licensed, per its `LICENSE` file)
 - **`empiar-depositor`**: [github.com/emdb-empiar/empiar-depositor](https://github.com/emdb-empiar/empiar-depositor) (Apache 2.0-licensed, per its `LICENSE` file)
 
 ## Status
@@ -506,10 +540,11 @@ entry could be created with no data uploaded (and a related factual
 correction — verified directly against `empiar-depositor`'s source — after
 an earlier fix's own justification turned out to be wrong); a resubmission
 guard that initially broke the pre-existing `--resume` recovery workflow;
-non-finite (`NaN`/`Infinity`) voxel values silently passing through; and
-all three scripts now routing every uncaught exception, including CLI
-usage errors, through one shared JSON safety net
-(`common.run_cli()`/`JsonArgumentParser`). 90 tests currently pass. See
+non-finite (`NaN`/`Infinity`) and boolean voxel values silently passing
+through; local manifest validation that ran only after a remote session was
+already created; and all four scripts now routing every uncaught exception,
+including CLI usage errors, through one shared JSON safety net
+(`common.run_cli()`/`JsonArgumentParser`). 124 tests currently pass. See
 [`ROADMAP.md`](ROADMAP.md) for researched-but-not-yet-built expansion
 ideas (composite maps, other experiment types, local file-content
 validation) and one idea that was investigated and deliberately rejected.

@@ -37,28 +37,24 @@ def cmd_check() -> None:
 
     config = DepositConfig.load()
     if config.refresh_token is None:
-        print_json(
-            {
-                "authenticated": False,
-                "reason": "No refresh token stored. Run login (see references/setup_checklist.md).",
-                "config_path": str(config.config_path),
-            }
-        )
-        # Exit nonzero here too, matching the "stored token is invalid" branch
-        # below - both report authenticated: false, so a caller checking the
-        # exit code (not just parsing the JSON body) shouldn't see success
-        # for one cause of "not authenticated" but failure for the other.
-        sys.exit(1)
-
-    ok = dsp.check_auth_key(config)
-    print_json(
-        {
-            "authenticated": ok,
+        payload = {
+            "authenticated": False,
+            "reason": "No refresh token stored. Run login (see references/setup_checklist.md).",
+            "config_path": str(config.config_path),
+        }
+    else:
+        payload = {
+            "authenticated": dsp.check_auth_key(config),
             "hostname": config.hostname,
             "config_path": str(config.config_path),
         }
-    )
-    if not ok:
+
+    print_json(payload)
+    # One exit-code decision, derived from the same value the JSON reports -
+    # body and exit code can't disagree, and a future not-authenticated
+    # branch can't forget its own sys.exit(1) (the per-branch inconsistency
+    # commit 791aef3 had to fix by hand).
+    if not payload["authenticated"]:
         sys.exit(1)
 
 
@@ -103,17 +99,13 @@ def cmd_login() -> None:
 def main() -> None:
     parser = JsonArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("check")
-    sub.add_parser("login")
+    # Handlers wired via set_defaults(func=...) - see em_deposit.main() for
+    # why this beats a hand-mirrored if/elif dispatch chain.
+    sub.add_parser("check").set_defaults(func=lambda args: cmd_check())
+    sub.add_parser("login").set_defaults(func=lambda args: cmd_login())
     args = parser.parse_args()
 
-    def dispatch() -> None:
-        if args.command == "check":
-            cmd_check()
-        elif args.command == "login":
-            cmd_login()
-
-    run_cli(dispatch)
+    run_cli(lambda: args.func(args))
 
 
 if __name__ == "__main__":

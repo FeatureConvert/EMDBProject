@@ -13,16 +13,26 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 
 def print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, default=str))
 
 
-def fail(message: str, **extra: Any) -> None:
+def fail(message: str, **extra: Any) -> NoReturn:
     print_json({"success": False, "error": message, **extra})
     sys.exit(1)
+
+
+def _require_json_object(data: Any, label: str, p: Path) -> dict[str, Any]:
+    """json.loads happily returns lists/strings/numbers for valid JSON that
+    isn't an object; callers of the loaders below all .get()/index the result,
+    so anything non-dict must fail here with the file named, not later with a
+    generic AttributeError that names nothing."""
+    if not isinstance(data, dict):
+        fail(f"{label} at {p} must contain a JSON object, got {type(data).__name__}")
+    return data
 
 
 def load_manifest(path: str | Path, label: str = "Manifest") -> dict[str, Any]:
@@ -30,10 +40,10 @@ def load_manifest(path: str | Path, label: str = "Manifest") -> dict[str, Any]:
     if not p.exists():
         fail(f"{label} not found: {p}")
     try:
-        return json.loads(p.read_text())
+        data = json.loads(p.read_text())
     except json.JSONDecodeError as exc:
         fail(f"{label} at {p} is not valid JSON: {exc}")
-    return {}  # unreachable, keeps type checkers happy
+    return _require_json_object(data, label, p)
 
 
 def load_optional_json(path: str | Path, label: str = "File") -> dict[str, Any]:
@@ -45,10 +55,10 @@ def load_optional_json(path: str | Path, label: str = "File") -> dict[str, Any]:
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text())
+        data = json.loads(p.read_text())
     except json.JSONDecodeError as exc:
         fail(f"{label} at {p} is not valid JSON: {exc}")
-    return {}  # unreachable, keeps type checkers happy
+    return _require_json_object(data, label, p)
 
 
 def require_fields(container: Any, fields: list[str], label: str = "Manifest") -> None:
@@ -136,7 +146,11 @@ class JsonArgumentParser(argparse.ArgumentParser):
     automatically inherit this class, so this only needs to be used for
     each script's top-level parser."""
 
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
+        # NoReturn is load-bearing, not just documentation: argparse code
+        # calling self.error() assumes it never returns and would continue
+        # into undefined behavior (e.g. returning an unbound namespace) if
+        # it did. fail() always exits, satisfying that.
         fail(f"Argument error: {message}")
 
 
@@ -145,11 +159,63 @@ def save_manifest(path: str | Path, data: dict[str, Any]) -> None:
     same pattern onedep_lib's own JsonSessionStore._save() uses, so a crash
     or kill mid-write leaves the previous good version intact instead of a
     truncated file that fails to parse on the next read."""
+    _atomic_write(path, json.dumps(data, indent=2, default=str))
+
+
+def save_text(path: str | Path, text: str) -> None:
+    """Atomically write a plain-text file (e.g. a human-readable submission
+    preview), same crash-safety as save_manifest."""
+    _atomic_write(path, text)
+
+
+def _atomic_write(path: str | Path, text: str) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, default=str))
+    tmp.write_text(text)
     os.replace(tmp, p)
+
+
+def short_repr(value: Any, limit: int = 200) -> str:
+    """repr() capped for error messages - a wrong-typed value can be
+    arbitrarily large (a whole misplaced object), and dumping it wholesale
+    into the JSON error would bury the message."""
+    text = repr(value)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def require_type(value: Any, expected: type, label: str, expected_desc: str) -> Any:
+    """Fail with a clean, specific message instead of a generic
+    AttributeError/TypeError further down, if a manifest field has the
+    wrong JSON type. One definition so the wording can't drift between
+    call sites."""
+    if not isinstance(value, expected):
+        fail(f"{label} must be {expected_desc}, got {type(value).__name__}: {short_repr(value)}")
+    return value
+
+
+def require_str(value: Any, label: str) -> str:
+    """require_type specialized for the common case: a manifest field that
+    should be a string is a number, null, or something else."""
+    return require_type(value, str, label, "a string")
+
+
+# --- EMPIAR submission-marker sidecar ----------------------------------------
+
+
+SUBMITTED_MARKER_SUFFIX = ".submitted.json"
+
+
+def submitted_marker_path(json_input_path: str | Path) -> Path:
+    """Sidecar file recording a successful prior EMPIAR submission - for
+    `json_input.json` the marker is `json_input.submitted.json` (the `.json`
+    suffix is replaced, not appended to). empiar-depositor doesn't give us a
+    manifest-like state file of our own to persist an entry_id into, unlike
+    em_deposit.py's manifest.json. Defined here in one place because both
+    the writer (empiar_deposit.py) and the reader (list_depositions.py)
+    depend on the exact same scheme - a divergence would make submitted
+    entries silently report as never submitted."""
+    return Path(json_input_path).with_suffix(SUBMITTED_MARKER_SUFFIX)
 
 
 # --- enum name -> onedep_lib enum member lookups -----------------------------
@@ -157,19 +223,10 @@ def save_manifest(path: str | Path, data: dict[str, Any]) -> None:
 # enums onedep_lib expects. Keys are case-insensitive.
 
 
-def _require_str(value: Any, label: str) -> str:
-    """Fail with a clean, specific message instead of a generic
-    AttributeError from .strip()/.upper() further down, if a manifest
-    field that should be a string is a number, null, or something else."""
-    if not isinstance(value, str):
-        fail(f"{label} must be a string, got {type(value).__name__}: {value!r}")
-    return value
-
-
 def country_enum(name: str):
     import onedep_lib as dsp
 
-    name = _require_str(name, "country")
+    name = require_str(name, "country")
     key = name.strip().upper().replace(" ", "_").replace("-", "_")
     try:
         return dsp.Country[key]
@@ -187,7 +244,7 @@ def country_enum(name: str):
 def em_subtype_enum(name: str):
     import onedep_lib as dsp
 
-    name = _require_str(name, "em_subtype")
+    name = require_str(name, "em_subtype")
     # Normalize spaces/hyphens the same way country_enum() does - "single
     # particle"/"single-particle" are natural phrasings (this project's own
     # docs describe subtypes as "SPA / helical / subtomogram / tomography"
@@ -207,7 +264,7 @@ def em_subtype_enum(name: str):
 def file_type_enum(name: str):
     import onedep_lib as dsp
 
-    name = _require_str(name, "file_type")
+    name = require_str(name, "file_type")
     key = name.strip().upper()
     try:
         return dsp.FileType[key]

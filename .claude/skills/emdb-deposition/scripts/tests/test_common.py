@@ -135,6 +135,33 @@ def test_load_optional_json_fails_cleanly_on_corrupt_file(tmp_path, capsys):
     assert "Marker" in out["error"]
 
 
+@pytest.mark.parametrize("loader", ["load_manifest", "load_optional_json"])
+@pytest.mark.parametrize("non_object", ["[]", '"a string"', "42", "null"])
+def test_loaders_reject_valid_json_that_is_not_an_object(loader, non_object, tmp_path, capsys):
+    # json.loads happily returns lists/strings/numbers; callers all .get()
+    # the result, so a non-object file must fail HERE (naming the file) not
+    # later with a generic "AttributeError: 'list' object has no attribute
+    # 'get'" that names nothing.
+    p = tmp_path / "data.json"
+    p.write_text(non_object)
+    with pytest.raises(SystemExit) as exc:
+        getattr(common, loader)(p, label="Manifest")
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert "must contain a JSON object" in out["error"]
+
+
+def test_submitted_marker_path_replaces_suffix():
+    # json_input.json -> json_input.submitted.json (suffix replaced, not
+    # appended). Both the EMPIAR writer and the list_depositions reader
+    # depend on this exact scheme.
+    from pathlib import Path
+
+    assert common.submitted_marker_path("a/json_input.json") == Path("a/json_input.submitted.json")
+    assert common.submitted_marker_path(Path("x/data.json")).name == "data.submitted.json"
+
+
 def test_require_fields_fails_on_missing(capsys):
     with pytest.raises(SystemExit) as exc:
         common.require_fields({"a": 1}, ["a", "b"])
