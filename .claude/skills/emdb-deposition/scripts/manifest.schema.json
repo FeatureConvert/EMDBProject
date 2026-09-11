@@ -1,9 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "EMDB deposition manifest",
-  "description": "Structural schema for depositions/<slug>/manifest.json, enforced by em_deposit.py before any onedep_lib session is opened. Covers types, required fields, and array shape only. Value semantics the schema cannot express are checked separately after this passes: country/em_subtype/file_type are resolved case-insensitively to onedep_lib enums, voxel values are checked for finiteness (JSON's number type accepts NaN/Infinity for floats), and a voxel block is required complete only for map-like file types. The tool writes session_id/remote_dep_id/site_url/file_id itself, so additional properties are permitted.",
+  "description": "Structural schema for depositions/<slug>/manifest.json, enforced by em_deposit.py before any onedep_lib session is opened. Covers types, required fields, and array shape only. Value semantics the schema cannot express are checked separately after this passes: experiment_type/country/em_subtype/file_type are resolved case-insensitively to onedep_lib enums; em_subtype is required (and voxel/MRC checks apply) only for EM experiments; ORCID and email formats are checked; voxel values are checked for finiteness (JSON's number type accepts NaN/Infinity for floats). The tool writes session_id/remote_dep_id/site_url/file_id itself, so additional properties are permitted.",
   "type": "object",
-  "required": ["email", "users", "country", "em_subtype", "files"],
+  "required": ["email", "users", "country", "files"],
   "properties": {
     "email": {"type": "string", "minLength": 1},
     "users": {
@@ -13,10 +13,24 @@
       "description": "ORCID iD(s); at least one."
     },
     "country": {"type": "string", "minLength": 1},
-    "em_subtype": {"type": "string", "minLength": 1},
+    "experiment_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "onedep_lib ExperimentType: EM (default if omitted), XRAY, NMR, SSNMR, NEUTRON, FIBER, EC. Resolved case-insensitively."
+    },
+    "em_subtype": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required for EM experiments only (enforced semantically): SPA, HELICAL, SUBTOMOGRAM, TOMOGRAPHY."
+    },
     "coordinates": {
       "type": "boolean",
-      "description": "true only if an MMCIF_COORD file is included. Must be a JSON boolean - the string \"false\" is rejected, not coerced."
+      "description": "true only if a coordinates file is included. Must be a JSON boolean - the string \"false\" is rejected, not coerced."
+    },
+    "related_emdb": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Optional. EMD-XXXXX accessions this entry is related to (composite/consensus/focused-refinement workflow). onedep_lib has no cross-referencing API, so these are informational: preview/submit remind you to link them in the OneDep web UI."
     },
     "session_id": {"type": ["string", "null"]},
     "remote_dep_id": {"type": ["string", "null"]},

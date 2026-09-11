@@ -207,6 +207,95 @@ def test_prepare_rejects_overflowing_integer_voxel_value(tmp_path, fails_json):
     fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "not a valid number")
 
 
+def _xray_manifest(tmp_path: Path, **overrides) -> Path:
+    """A non-EM (X-ray) manifest: no em_subtype, no voxel, coordinates +
+    structure factors instead of maps. Files need not exist on disk for
+    validation (non-map file types aren't sniffed)."""
+    base = {
+        "email": "depositor@example.org",
+        "users": ["0000-0002-5109-8728"],
+        "country": "USA",
+        "experiment_type": "XRAY",
+        "files": [
+            {"path": str(tmp_path / "model.cif"), "file_type": "MMCIF_COORD"},
+            {"path": str(tmp_path / "sf.cif"), "file_type": "CRYSTAL_STRUC_FACTORS"},
+        ],
+    }
+    base.update(overrides)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(base))
+    return manifest_path
+
+
+def test_validate_accepts_non_em_manifest_without_em_subtype(tmp_path):
+    manifest = json.loads(_xray_manifest(tmp_path).read_text())
+    em_deposit._validate_manifest(manifest)  # must not raise / exit
+
+
+def test_validate_requires_em_subtype_for_em(tmp_path, fails_json):
+    manifest = json.loads(_manifest(tmp_path).read_text())
+    del manifest["em_subtype"]  # EM (default) without a subtype
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "em_subtype is required")
+
+
+def test_validate_rejects_unknown_experiment_type(tmp_path, fails_json):
+    manifest_path = _xray_manifest(tmp_path, experiment_type="cryoet")
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "Unknown experiment_type")
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_non_em_passes_experiment_type_and_skips_subtype(
+    mock_deposit_init, mock_config_cls, tmp_path
+):
+    import onedep_lib as dsp
+
+    mock_config_cls.load.return_value = _fake_config()
+    dep = MagicMock()
+    dep.session_id = "sess-x"
+    dep.add_file.side_effect = ["fid-1", "fid-2"]
+    mock_deposit_init.return_value = dep
+
+    manifest_path = _xray_manifest(tmp_path)
+    # non-map files must exist for add_file; create them
+    for entry in json.loads(manifest_path.read_text())["files"]:
+        Path(entry["path"]).write_bytes(b"x")
+
+    em_deposit.cmd_prepare(str(manifest_path))
+
+    _, kwargs = mock_deposit_init.call_args
+    assert kwargs["experiment_type"] == dsp.ExperimentType.XRAY
+    # No coordinates key and non-EM -> set_em_params not called at all.
+    dep.set_em_params.assert_not_called()
+    dep.set_voxel_values.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", ["8000", "EMDB-1", "not-an-accession"])
+def test_validate_rejects_malformed_related_emdb(bad, tmp_path, fails_json):
+    manifest = json.loads(_manifest(tmp_path).read_text())
+    manifest["related_emdb"] = [bad]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "related_emdb")
+
+
+def test_preview_shows_experiment_type_and_related_entries(tmp_path, capsys):
+    manifest = json.loads(_manifest(tmp_path).read_text())
+    manifest["related_emdb"] = ["EMD-8000", "EMD-8001"]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    em_deposit.cmd_preview(str(manifest_path))
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    text = (tmp_path / "submission_preview.md").read_text()
+    assert "Experiment type:** EM" in text
+    assert "EMD-8000" in text
+    assert "Related entries" in text  # the web-UI linking note
+
+
 def test_prepare_rejects_map_file_too_small_to_be_mrc(tmp_path, fails_json):
     # A truncated download or wrong file smaller than the 1024-byte MRC
     # header must be caught locally, before upload.
