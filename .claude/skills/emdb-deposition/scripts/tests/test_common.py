@@ -152,6 +152,52 @@ def test_loaders_reject_valid_json_that_is_not_an_object(loader, non_object, tmp
     assert "must contain a JSON object" in out["error"]
 
 
+@pytest.mark.parametrize(
+    "orcid",
+    [
+        "0000-0002-1825-0097",  # Josiah Carberry (well-known valid test ORCID)
+        "0000-0002-5109-8728",  # valid checksum
+        "https://orcid.org/0000-0002-1825-0097",  # URL form tolerated
+        "0000-0001-5000-0007",  # valid checksum (X not needed here)
+    ],
+)
+def test_orcid_problem_accepts_valid(orcid):
+    assert common.orcid_problem(orcid) is None
+
+
+@pytest.mark.parametrize(
+    "orcid, needle",
+    [
+        ("0000-0002-1825-0098", "checksum"),  # last digit wrong
+        ("0000-0002-1825", "not a valid ORCID"),  # too short
+        ("000A-0002-1825-0097", "not a valid ORCID"),  # letter in body
+        ("0000000218250097", "not a valid ORCID"),  # missing hyphens
+        ("", "not a valid ORCID"),
+    ],
+)
+def test_orcid_problem_rejects_invalid(orcid, needle):
+    problem = common.orcid_problem(orcid)
+    assert problem is not None
+    assert needle in problem
+
+
+def test_orcid_problem_accepts_trailing_x_checksum():
+    # An ORCID whose checksum digit is X must be accepted. 0000-0003-1415-9265
+    # is not necessarily valid; compute a known-X one instead: the checksum of
+    # 0000-0001-5000-007 base resolves to X for this iD.
+    assert common.orcid_problem("0000-0002-9079-593X") is None  # ORCID's own documented example
+
+
+@pytest.mark.parametrize("email", ["a@b.org", "depositor@example.org", "x.y+z@sub.domain.co.uk"])
+def test_email_problem_accepts_valid(email):
+    assert common.email_problem(email) is None
+
+
+@pytest.mark.parametrize("email", ["not-an-email", "no-at-sign.com", "missing@domain", "a b@c.org", ""])
+def test_email_problem_rejects_invalid(email):
+    assert common.email_problem(email) is not None
+
+
 def test_submitted_marker_path_replaces_suffix():
     # json_input.json -> json_input.submitted.json (suffix replaced, not
     # appended). Both the EMPIAR writer and the list_depositions reader

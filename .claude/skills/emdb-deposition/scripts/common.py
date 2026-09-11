@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, NoReturn
@@ -213,6 +214,53 @@ def require_str(value: Any, label: str) -> str:
     """require_type specialized for the common case: a manifest field that
     should be a string is a number, null, or something else."""
     return require_type(value, str, label, "a string")
+
+
+# --- lightweight format checks (ORCID, email) --------------------------------
+# These catch obvious mistakes locally (before wwPDB does) without pretending
+# to be exhaustive validators. Both return a problem message or None, so the
+# caller controls how to report - matching the _sniff_mrc() pattern.
+
+_ORCID_RE = re.compile(r"^(\d{4})-(\d{4})-(\d{4})-(\d{3}[\dX])$")
+# Deliberately loose: exactly one @, no spaces, and a dot in the domain.
+# A stricter regex risks rejecting valid addresses, and the real check is
+# wwPDB's anyway - this only catches fat-finger mistakes like a missing @.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def orcid_problem(value: str) -> str | None:
+    """Return a message if `value` isn't a structurally valid ORCID iD, else
+    None. Validates the 16-digit 0000-0002-1825-0097 form and the ISO 7064
+    MOD 11-2 checksum (final char may be X). Tolerates an https://orcid.org/
+    prefix. Any string is otherwise accepted upstream, so a transposed or
+    truncated iD would reach wwPDB unnoticed without this."""
+    raw = value.strip()
+    for prefix in ("https://orcid.org/", "http://orcid.org/", "orcid.org/"):
+        if raw.lower().startswith(prefix):
+            raw = raw[len(prefix):]
+            break
+    if not _ORCID_RE.match(raw):
+        return (
+            f"{value!r} is not a valid ORCID iD - expected 16 digits grouped as "
+            "0000-0002-1825-0097 (the final character may be X)"
+        )
+    digits = raw.replace("-", "")
+    total = 0
+    for ch in digits[:15]:
+        total = (total + int(ch)) * 2
+    check = (12 - total % 11) % 11
+    expected = "X" if check == 10 else str(check)
+    if expected != digits[15]:
+        return f"{value!r} has an invalid ORCID checksum digit (computed {expected}, found {digits[15]})"
+    return None
+
+
+def email_problem(value: str) -> str | None:
+    """Return a message if `value` clearly isn't an email address, else None.
+    Deliberately permissive - see _EMAIL_RE."""
+    if not _EMAIL_RE.match(value.strip()):
+        return f"{value!r} doesn't look like an email address (expected something like name@example.org)"
+    return None
 
 
 # --- EMPIAR submission-marker sidecar ----------------------------------------

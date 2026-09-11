@@ -97,9 +97,9 @@ mode, stamp) for each map file. See `_sniff_mrc()` in
 body, so it can't detect a valid-header-but-corrupt-data file — that still
 surfaces at upload / wwPDB server-side validation.
 
-## 5. Richer manifest-level validation — partially DONE
+## 5. Richer manifest-level validation — DONE
 
-**Status: the JSON Schema is implemented.** `manifest.json` is now validated
+**Status: fully implemented** (JSON Schema + ORCID/email format checks). `manifest.json` is now validated
 against a Draft-7 schema
 ([`scripts/manifest.schema.json`](.claude/skills/emdb-deposition/scripts/manifest.schema.json))
 via `jsonschema` — the same mechanism the EMPIAR side already used for
@@ -110,14 +110,14 @@ types, non-empty `users`/`files`, and `coordinates` being a real boolean;
 enum resolution, voxel finiteness, and the MRC sniff remain as semantic
 checks the schema can't express.
 
-**Still open (deliberately not built):**
-- ORCID iD *format* validation (`0000-0002-XXXX-XXXX` with a checksum
-  digit) — any non-empty string is still accepted.
-- Email *format* sanity check — presence/type only.
+**Now also done:**
+- ORCID iD *format* + ISO 7064 MOD 11-2 checksum validation
+  (`common.orcid_problem`), tolerating an `https://orcid.org/` prefix.
+- Email *format* sanity check (`common.email_problem`), deliberately
+  permissive.
 
-**Effort:** Small each. **Value:** Moderate, mostly UX polish rather than
-closing a real gap. **Recommendation:** low priority; fine to defer
-indefinitely.
+Only thing consciously left out: matching an ORCID against the live ORCID
+registry (a network call, out of scope for these local pre-checks).
 
 ## Considered and rejected: `status --wait`
 
