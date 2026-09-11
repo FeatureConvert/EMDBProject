@@ -50,10 +50,12 @@ from common import (  # noqa: E402
     JsonArgumentParser,
     country_enum,
     em_subtype_enum,
+    email_problem,
     fail,
     file_type_enum,
     iter_schema_issues,
     load_manifest,
+    orcid_problem,
     print_json,
     require_fields,
     require_submission_safety_gates,
@@ -278,6 +280,16 @@ def _validate_manifest(manifest: dict) -> None:
     issues = iter_schema_issues(manifest, schema)
     if issues:
         fail("Manifest failed schema validation.", issues=issues)
+
+    # Format checks the schema can't express (schema guarantees these are
+    # non-empty strings; here we check they're the RIGHT shape of string).
+    problem = email_problem(manifest["email"])
+    if problem:
+        fail(f"email: {problem}")
+    for user in manifest["users"]:
+        problem = orcid_problem(user)
+        if problem:
+            fail(f"users: {problem}")
 
     # Enum resolution is a pure local lookup - validate before any session
     # exists. _open_deposition re-resolves country when creating; the

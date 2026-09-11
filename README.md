@@ -548,7 +548,8 @@ including CLI usage errors, through one shared JSON safety net
 now writes a human-readable review of the exact payload before any real
 submission, manifest structure is validated against a JSON Schema
 (`scripts/manifest.schema.json`), and map files get a local MRC2014/CCP4
-header sniff before upload. 128 tests currently pass. See
+header sniff before upload, and ORCID iD (checksum) and email format are
+validated locally. 146 tests currently pass. See
 [`ROADMAP.md`](ROADMAP.md) for the remaining expansion ideas (composite
 maps, other experiment types, read-only lookups; the local-file-validation
 and manifest-schema items are now implemented) and one idea that was

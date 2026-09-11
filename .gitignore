@@ -7,6 +7,10 @@ __pycache__/
 # and local file paths a researcher may not want committed.
 depositions/
 
+# Rendered/design PDFs kept locally, not committed - README.pdf duplicates
+# README.md, and these are large binaries that bloat the repo.
+*.pdf
+
 # OS cruft
 .DS_Store
 

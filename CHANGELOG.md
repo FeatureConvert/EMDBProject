@@ -4,6 +4,31 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 is pre-release and not yet versioned.
 
+## [Unreleased] — 2026-09-11 (part 3: ORCID/email validation)
+
+Finished the remaining half of ROADMAP item 5.
+
+### Added
+
+- **ORCID iD validation** (`common.orcid_problem`): the manifest's `users`
+  entries are checked for the `0000-0002-1825-0097` structure and the ISO
+  7064 MOD 11-2 checksum (final character may be `X`), tolerating an
+  `https://orcid.org/` prefix. A transposed or truncated iD now fails at
+  `prepare`/`preview` instead of reaching wwPDB.
+- **Email sanity check** (`common.email_problem`): the manifest's `email` is
+  checked for an obvious shape (one `@`, a dotted domain, no spaces) —
+  deliberately permissive, just catching fat-finger mistakes.
+
+### Changed
+
+- `.gitignore` now ignores `*.pdf` (README.pdf duplicated README.md and the
+  PDFs are large binaries).
+
+### Internal / tests
+
+- Added ORCID (valid, bad-checksum, malformed, trailing-`X`) and email
+  (valid/invalid) coverage. 128 → 146 tests, all passing.
+
 ## [Unreleased] — 2026-09-11 (part 2: roadmap items 4 & 5)
 
 Implemented two researched roadmap items: a local MRC map-file header check
