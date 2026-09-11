@@ -78,6 +78,21 @@ def require_fields(container: Any, fields: list[str], label: str = "Manifest") -
         fail(f"{label} is missing required field(s): {', '.join(missing)}")
 
 
+def iter_schema_issues(data: Any, schema: dict) -> list[dict]:
+    """Validate `data` against a Draft-7 JSON Schema, returning a sorted list
+    of {path, message} issues ([] when valid). Shared by the EMDB manifest
+    check and the EMPIAR JSON_INPUT check so both report schema problems the
+    same way."""
+    import jsonschema
+
+    validator = jsonschema.Draft7Validator(schema)
+    # Stringify path elements before sorting - e.path mixes str (object keys)
+    # and int (array indices), and Python can't compare across those types,
+    # so sorting the raw values would raise TypeError on some error sets.
+    errors = sorted(validator.iter_errors(data), key=lambda e: [str(p) for p in e.path])
+    return [{"path": ".".join(str(p) for p in e.path) or "<root>", "message": e.message} for e in errors]
+
+
 def require_confirm(confirm: bool, review_cmd: str) -> None:
     """Fail with a clean JSON error if --confirm wasn't passed.
 

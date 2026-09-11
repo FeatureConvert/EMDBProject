@@ -61,6 +61,7 @@ from common import (  # noqa: E402
     SUBMITTED_MARKER_SUFFIX,
     JsonArgumentParser,
     fail,
+    iter_schema_issues,
     load_manifest,
     load_optional_json,
     print_json,
@@ -99,20 +100,10 @@ def _validate(json_input_path: str) -> tuple[bool, list[dict]]:
     cmd_submit, so submit re-checks against the current file on disk rather
     than trusting that a validate run earlier in the conversation still
     reflects any edits made since."""
-    import jsonschema
-
     schema = json.loads(_schema_path().read_text())
     data = load_manifest(json_input_path, label="JSON_INPUT")
-
-    validator = jsonschema.Draft7Validator(schema)
-    # Stringify path elements before sorting - e.path mixes str (object keys)
-    # and int (array indices), and Python can't compare across those types,
-    # so sorting the raw values would raise TypeError on some error sets.
-    errors = sorted(validator.iter_errors(data), key=lambda e: [str(p) for p in e.path])
-    issues = [
-        {"path": ".".join(str(p) for p in e.path) or "<root>", "message": e.message} for e in errors
-    ]
-    return not errors, issues
+    issues = iter_schema_issues(data, schema)
+    return not issues, issues
 
 
 def cmd_validate(json_input_path: str) -> None:

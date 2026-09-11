@@ -39,7 +39,9 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import struct
 import sys
 from pathlib import Path
 
@@ -50,12 +52,11 @@ from common import (  # noqa: E402
     em_subtype_enum,
     fail,
     file_type_enum,
+    iter_schema_issues,
     load_manifest,
     print_json,
     require_fields,
-    require_str,
     require_submission_safety_gates,
-    require_type,
     run_cli,
     save_manifest,
     save_text,
@@ -64,6 +65,15 @@ from common import (  # noqa: E402
 
 MAP_LIKE_TYPES = {"EM_MAP", "EM_HALF_MAP", "EM_ADDITIONAL_MAP"}
 VOXEL_FIELDS = ("spacing_x", "spacing_y", "spacing_z", "contour")
+_MANIFEST_SCHEMA_PATH = Path(__file__).parent / "manifest.schema.json"
+
+# Known MRC/CCP4 data modes, for a friendlier preview summary (not enforced -
+# the enforced checks are the 1024-byte header size, the "MAP " format stamp,
+# and positive dimensions).
+_MRC_MODES = {
+    0: "int8", 1: "int16", 2: "float32", 3: "complex int16", 4: "complex float32",
+    6: "uint16", 12: "float16", 101: "4-bit",
+}
 
 
 def _build_config():
@@ -122,6 +132,53 @@ def _coerce_voxel_floats(voxel: dict, path: str) -> dict[str, float]:
     return out
 
 
+def _sniff_mrc(path: str) -> tuple[str | None, str | None]:
+    """Lightweight sniff of a map file's fixed 1024-byte MRC2014/CCP4 header
+    (no full-file parse, stdlib `struct` only). Returns (summary, problem):
+    `summary` is a short human-readable header description (or None if the
+    file can't be read), `problem` is a message when the file is clearly not
+    a valid MRC/CCP4 map (or None when it looks fine).
+
+    wwPDB requires MRC2014/CCP4-format maps, which carry a `MAP ` stamp at
+    byte 208 and positive dimensions. Catching a wrong extension, a
+    truncated download, or a mixed-up path here means the depositor hears
+    about it at `prepare` time instead of much later at upload or wwPDB's
+    own server-side validation. The `MAP ` stamp is shared by MRC2014 and
+    CCP4, so requiring it does not reject either accepted format."""
+    p = Path(path)
+    try:
+        with p.open("rb") as fh:
+            header = fh.read(1024)
+    except OSError as exc:
+        return None, f"could not read file: {exc}"
+
+    if len(header) < 1024:
+        return (
+            None,
+            f"file is only {len(header)} bytes - smaller than the 1024-byte MRC/CCP4 "
+            "header, so it is not a valid map file (truncated download or wrong file?)",
+        )
+
+    nx, ny, nz, mode = struct.unpack("<iiii", header[:16])
+    has_map_stamp = header[208:212] == b"MAP "
+    mode_desc = _MRC_MODES.get(mode, f"unknown mode {mode}")
+    summary = (
+        f"{nx}x{ny}x{nz}, {mode_desc}, "
+        f"MAP stamp {'present' if has_map_stamp else 'ABSENT'}"
+    )
+
+    if not has_map_stamp:
+        return (
+            summary,
+            "no 'MAP ' format stamp at byte 208 - wwPDB requires MRC2014/CCP4 maps, "
+            "which always carry this stamp. This file may be truncated, a non-standard "
+            "or pre-2014 MRC, or not a map file at all.",
+        )
+    if nx <= 0 or ny <= 0 or nz <= 0:
+        return summary, f"MRC header reports non-positive dimensions ({nx}x{ny}x{nz})"
+    return summary, None
+
+
 def _close_quietly(dep) -> None:
     """Best-effort close, once we already have a real result to report.
 
@@ -165,19 +222,18 @@ def _open_deposition(manifest: dict, config):
 
 
 def _validate_files_section(files: list[dict]) -> None:
-    """Validate manifest['files'] shape AND values before any session is
-    opened, so a bad manifest fails clean instead of leaving an orphaned
-    local onedep_lib session behind (or crashing with a raw KeyError/
-    TypeError from deep inside the registration loop)."""
+    """Value/semantic checks the JSON Schema can't express, run before any
+    session is opened so a bad manifest fails clean instead of leaving an
+    orphaned local onedep_lib session behind. The schema (see
+    _validate_manifest) has already guaranteed each entry is an object with
+    string `path`/`file_type`, so this only covers: case-insensitive enum
+    resolution, duplicate-path detection, voxel completeness/finiteness for
+    map-like types, and an MRC/CCP4 header sniff of map files that exist."""
     seen_paths: dict[str, str] = {}
     for entry in files:
-        require_fields(entry, ["path", "file_type"], label="Each files[] entry")
-        # require_fields only checked presence, not type - a numeric or
-        # null file_type/path would otherwise crash later with a generic
-        # AttributeError instead of pointing at which field is wrong.
-        path = require_str(entry["path"], "files[] entry 'path'")
-        ftype_raw = require_str(entry["file_type"], "files[] entry 'file_type'")
-        # Resolving the enum is a pure local lookup, so do it here too: an
+        path = entry["path"]
+        ftype_raw = entry["file_type"]
+        # Resolving the enum is a pure local lookup, so do it here: an
         # unknown/misspelled file_type must fail before deposit_init runs,
         # not from inside the post-session registration loop.
         ftype = file_type_enum(ftype_raw)
@@ -190,57 +246,45 @@ def _validate_files_section(files: list[dict]) -> None:
                 "file would silently register as two distinct files."
             )
         seen_paths[path] = ftype_raw
-        # Only map-like files ever have their voxel data read (see the
-        # MAP_LIKE_TYPES check in cmd_prepare's registration loop) - a
-        # "voxel" block on e.g. an ENTRY_IMAGE entry is never used, so don't
-        # demand it be complete; that would only produce a confusing error
-        # for data that was never going to matter.
-        if "voxel" in entry and ftype.name in MAP_LIKE_TYPES:
-            require_fields(entry["voxel"], list(VOXEL_FIELDS), label=f"voxel block for {path!r}")
-            # Values too, not just presence - a NaN/boolean/overflowing
-            # value must also fail before any session exists.
-            _coerce_voxel_floats(entry["voxel"], path)
+        if ftype.name in MAP_LIKE_TYPES:
+            # Only map-like files ever have their voxel data read - a "voxel"
+            # block on e.g. an ENTRY_IMAGE entry is never used, so don't
+            # demand it there; that would only confuse.
+            if "voxel" in entry:
+                require_fields(entry["voxel"], list(VOXEL_FIELDS), label=f"voxel block for {path!r}")
+                # Values too, not just presence - a NaN/boolean/overflowing
+                # value must fail before any session exists.
+                _coerce_voxel_floats(entry["voxel"], path)
+            # Sniff the map file's header if it's on disk (a missing file is
+            # left for add_file to report at registration time). Catches a
+            # wrong/truncated/non-MRC file locally, before upload.
+            if Path(path).is_file():
+                _, problem = _sniff_mrc(path)
+                if problem:
+                    fail(f"{ftype_raw} file {path!r} is not a valid MRC/CCP4 map: {problem}")
 
 
 def _validate_manifest(manifest: dict) -> None:
     """Every purely-local check, before any session side effect: a manifest
     that fails here has cost nothing - no deposit_init session on disk, no
-    add_file registrations, no manifest mutations to clean up."""
-    require_fields(manifest, ["email", "users", "country", "em_subtype", "files"])
+    add_file registrations, no manifest mutations to clean up.
 
-    require_str(manifest["email"], "email")
-    users = require_type(manifest["users"], list, "Manifest's 'users' field", "a list")
-    if not users:
-        fail("Manifest's 'users' list is empty - at least one ORCID iD is required.")
-    for user in users:
-        require_str(user, "Each entry in 'users'")
-    # onedep_lib passes email/users through with no runtime validation of
-    # its own (annotations only), so a shape mistake here - e.g. one ORCID
-    # as a bare string instead of a list - would otherwise surface only at
-    # real wwPDB submission time.
-
-    coordinates = manifest.get("coordinates", False)
-    if not isinstance(coordinates, bool):
-        # A bool() coercion here would read the string "false" as True -
-        # silently inverting the field instead of erroring.
-        fail(
-            "Manifest's 'coordinates' field must be JSON true or false, "
-            f"got {type(coordinates).__name__}: {short_repr(coordinates)}"
-        )
+    Structural validation (required fields, types, array shape) is delegated
+    to manifest.schema.json via jsonschema - the same mechanism the EMPIAR
+    side uses for JSON_INPUT. Everything the schema can't express (enum
+    resolution, duplicate paths, voxel finiteness, MRC header sniff) follows
+    in _validate_files_section and the enum calls below."""
+    schema = json.loads(_MANIFEST_SCHEMA_PATH.read_text())
+    issues = iter_schema_issues(manifest, schema)
+    if issues:
+        fail("Manifest failed schema validation.", issues=issues)
 
     # Enum resolution is a pure local lookup - validate before any session
     # exists. _open_deposition re-resolves country when creating; the
     # registration loop re-resolves per-entry file types.
     country_enum(manifest["country"])
     em_subtype_enum(manifest["em_subtype"])
-
-    # A "files" value that's a string or dict is truthy and iterable, but
-    # iterating it yields characters or dict keys - require the real type
-    # up front so the error points at the actual mistake.
-    files = require_type(manifest["files"], list, "Manifest's 'files' field", "a list")
-    if not files:
-        fail("Manifest has no files listed under 'files'.")
-    _validate_files_section(files)
+    _validate_files_section(manifest["files"])
 
 
 def cmd_prepare(manifest_path: str) -> None:
@@ -373,7 +417,7 @@ def _render_preview(manifest: dict, manifest_path: str) -> str:
     lines.append(f"- **Depositor email:** {manifest['email']}")
     lines.append(f"- **ORCID iD(s):** {', '.join(manifest['users'])}")
     lines.append(f"- **Country:** {country.value} (`{country.name}`)")
-    lines.append(f"- **Experiment type:** EM")
+    lines.append("- **Experiment type:** EM")
     lines.append(f"- **EM subtype:** {subtype.name}")
     lines.append(f"- **Includes fitted coordinates:** {'yes' if coordinates else 'no'}")
     lines.append("")
@@ -391,6 +435,13 @@ def _render_preview(manifest: dict, manifest_path: str) -> str:
                 f"x={coerced['spacing_x']}, y={coerced['spacing_y']}, z={coerced['spacing_z']}; "
                 f"contour level={coerced['contour']}"
             )
+        # MRC header summary for map files on disk (validation already ran, so
+        # anything shown here passed the sniff - it's a confirmation for the
+        # depositor that the file really is the map they meant).
+        if ftype.name in MAP_LIKE_TYPES and Path(entry["path"]).is_file():
+            summary, _ = _sniff_mrc(entry["path"])
+            if summary:
+                lines.append(f"  - MRC header: {summary}")
     lines.append("")
 
     lines.append("## Not covered by this tool")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,18 @@ import pytest
 from conftest import load_script_module
 
 em_deposit = load_script_module("em_deposit")
+
+_MAP_LIKE_TYPES = {"EM_MAP", "EM_HALF_MAP", "EM_ADDITIONAL_MAP"}
+
+
+def _mrc_header_bytes(nx: int = 4, ny: int = 4, nz: int = 4, mode: int = 2) -> bytes:
+    """A minimal but valid 1024-byte MRC2014/CCP4 map header: positive
+    dimensions, a known mode, and the 'MAP ' stamp at byte 208 that the
+    header sniff requires."""
+    header = bytearray(1024)
+    struct.pack_into("<iiii", header, 0, nx, ny, nz, mode)
+    header[208:212] = b"MAP "
+    return bytes(header)
 
 
 def _manifest(tmp_path: Path, **overrides) -> Path:
@@ -33,7 +46,12 @@ def _manifest(tmp_path: Path, **overrides) -> Path:
     }
     base.update(overrides)
     for f in base["files"]:
-        Path(f["path"]).write_bytes(b"placeholder")
+        # Map-like files get a valid MRC header so the header sniff passes;
+        # everything else is a small placeholder (its contents are never read).
+        if f["file_type"] in _MAP_LIKE_TYPES:
+            Path(f["path"]).write_bytes(_mrc_header_bytes())
+        else:
+            Path(f["path"]).write_bytes(b"placeholder")
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(base))
     return manifest_path
@@ -124,54 +142,44 @@ def test_preview_validates_manifest_first(tmp_path, fails_json):
     fails_json(lambda: em_deposit.cmd_preview(str(manifest_path)), "finite number")
 
 
-def test_prepare_fails_cleanly_on_missing_required_field(tmp_path, capsys):
+def test_prepare_fails_cleanly_on_missing_required_field(tmp_path, fails_json):
+    # A missing required field is caught by JSON Schema validation and
+    # reported as a parseable JSON error (issues list), not a raw traceback -
+    # SKILL.md relies on every script's output being parseable.
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     del manifest["email"]
     manifest_path.write_text(json.dumps(manifest))
 
-    with pytest.raises(SystemExit) as exc:
-        em_deposit.cmd_prepare(str(manifest_path))
-    assert exc.value.code == 1
-
-    # Must still be valid JSON on stdout, not a raw KeyError traceback -
-    # SKILL.md relies on every script's output being parseable.
-    out = json.loads(capsys.readouterr().out)
-    assert out["success"] is False
-    assert "email" in out["error"]
+    obj = fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "email")
+    assert obj["error"] == "Manifest failed schema validation."
 
 
 @pytest.mark.parametrize("bad_files", ["not-a-list", {"a": 1}, 42, None])
-def test_prepare_fails_cleanly_when_files_is_not_a_list(bad_files, tmp_path, capsys):
-    # Found by actually running prepare with files set to a string/dict:
-    # both are truthy and iterable, so the old code iterated CHARACTERS
-    # (for a string) or DICT KEYS (for a dict) as if they were file
-    # entries, producing a deeply confusing error like "got str: 'n'"
-    # (the first character) instead of pointing at the real mistake.
+def test_prepare_fails_cleanly_when_files_is_not_a_list(bad_files, tmp_path, fails_json):
+    # A "files" value that's a string or dict is truthy and iterable; without
+    # a real type check the old code iterated characters/keys as if they were
+    # file entries. JSON Schema now rejects any non-array up front.
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     manifest["files"] = bad_files
     manifest_path.write_text(json.dumps(manifest))
 
-    with pytest.raises(SystemExit) as exc:
-        em_deposit.cmd_prepare(str(manifest_path))
-    assert exc.value.code == 1
-    out = json.loads(capsys.readouterr().out)
-    assert out["success"] is False
-    assert "must be a list" in out["error"]
+    # schema message for a non-array is "... is not of type 'array'"
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "array")
 
 
 @pytest.mark.parametrize("field, bad_value", [("file_type", 123), ("path", 42)])
 def test_prepare_fails_cleanly_when_files_entry_field_is_not_a_string(field, bad_value, tmp_path, fails_json):
-    # require_fields only checked presence; a numeric/null path or file_type
-    # would otherwise crash later with a generic AttributeError instead of
-    # naming which field and file is wrong.
+    # A numeric/null path or file_type is rejected by JSON Schema before it
+    # can crash later with a generic AttributeError.
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     manifest["files"][1][field] = bad_value
     manifest_path.write_text(json.dumps(manifest))
 
-    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "must be a string")
+    # schema message is "<value> is not of type 'string'"
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "string")
 
 
 @pytest.mark.parametrize("bad_value", [True, False])
@@ -197,6 +205,50 @@ def test_prepare_rejects_overflowing_integer_voxel_value(tmp_path, fails_json):
     manifest_path.write_text(json.dumps(manifest))
 
     fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "not a valid number")
+
+
+def test_prepare_rejects_map_file_too_small_to_be_mrc(tmp_path, fails_json):
+    # A truncated download or wrong file smaller than the 1024-byte MRC
+    # header must be caught locally, before upload.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    Path(manifest["files"][0]["path"]).write_bytes(b"too small")
+    manifest_path.write_text(json.dumps(manifest))
+
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "valid MRC/CCP4 map")
+
+
+def test_prepare_rejects_map_file_without_map_stamp(tmp_path, fails_json):
+    # wwPDB requires MRC2014/CCP4, which always carry the 'MAP ' stamp at
+    # byte 208. A 1024-byte file lacking it (a renamed non-map file, say) is
+    # rejected.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    no_stamp = bytearray(1024)
+    struct.pack_into("<iii", no_stamp, 0, 4, 4, 4)  # positive dims, but no MAP stamp
+    Path(manifest["files"][0]["path"]).write_bytes(bytes(no_stamp))
+    manifest_path.write_text(json.dumps(manifest))
+
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "MAP")
+
+
+def test_prepare_rejects_mrc_with_nonpositive_dimensions(tmp_path, fails_json):
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    Path(manifest["files"][0]["path"]).write_bytes(_mrc_header_bytes(nx=0, ny=4, nz=4))
+    manifest_path.write_text(json.dumps(manifest))
+
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "non-positive dimensions")
+
+
+def test_preview_shows_mrc_header_summary(tmp_path, capsys):
+    manifest_path = _manifest(tmp_path)  # writes valid MRC headers for map files
+    em_deposit.cmd_preview(str(manifest_path))
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    text = (tmp_path / "submission_preview.md").read_text()
+    assert "MRC header:" in text
+    assert "MAP stamp present" in text
 
 
 @pytest.mark.parametrize("bad_value", ["false", "no", 1, 0])
@@ -274,18 +326,15 @@ def test_prepare_rejects_duplicate_file_paths(tmp_path, capsys):
     assert "same file path twice" in out["error"]
 
 
-def test_prepare_fails_cleanly_on_file_entry_missing_path(tmp_path, capsys):
+def test_prepare_fails_cleanly_on_file_entry_missing_path(tmp_path, fails_json):
+    # A files[] entry missing "path" is caught by JSON Schema (required
+    # property), reported as parseable JSON rather than a raw traceback.
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     del manifest["files"][1]["path"]
     manifest_path.write_text(json.dumps(manifest))
 
-    with pytest.raises(SystemExit) as exc:
-        em_deposit.cmd_prepare(str(manifest_path))
-    assert exc.value.code == 1
-    out = json.loads(capsys.readouterr().out)
-    assert out["success"] is False
-    assert "path" in out["error"]
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "path")
 
 
 def test_prepare_fails_cleanly_on_voxel_missing_contour(tmp_path, capsys):
@@ -302,22 +351,16 @@ def test_prepare_fails_cleanly_on_voxel_missing_contour(tmp_path, capsys):
     assert "contour" in out["error"]
 
 
-def test_prepare_fails_cleanly_on_voxel_that_is_not_an_object(tmp_path, capsys):
+def test_prepare_fails_cleanly_on_voxel_that_is_not_an_object(tmp_path, fails_json):
     # A manifest with "voxel": null (a plausible authoring mistake - e.g. a
     # template field left unfilled) used to crash with a raw TypeError from
-    # `f not in None` inside require_fields, since only key *presence* was
-    # checked, never that the container was actually a dict.
+    # `f not in None`. JSON Schema now rejects a non-object voxel cleanly.
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     manifest["files"][0]["voxel"] = None
     manifest_path.write_text(json.dumps(manifest))
 
-    with pytest.raises(SystemExit) as exc:
-        em_deposit.cmd_prepare(str(manifest_path))
-    assert exc.value.code == 1
-    out = json.loads(capsys.readouterr().out)
-    assert out["success"] is False
-    assert "object" in out["error"].lower()
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "object")
 
 
 def test_prepare_does_not_require_voxel_fields_on_non_map_like_entries(tmp_path, capsys):
