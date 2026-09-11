@@ -22,7 +22,27 @@ web portal. Confirmed by reading the installed package source:
 2. Scroll to the **"Deposition API"** section of the page and generate an
    API refresh token. It's valid 30 days and **shown only once** — copy it
    immediately.
-3. In your own shell (not through Claude), run:
+3. **Important — hostname mismatch:** `onedep_lib` defaults to talking to
+   `https://deposit.wwpdb.org/deposition`, but the token you just generated
+   is scoped to `https://deposit-pdbe.wwpdb.org/deposition` (the PDBe site
+   from step 1) — a *different* host. Refresh tokens are host-scoped, so if
+   you skip setting `ONEDEP_HOSTNAME` to match, login fails with `"Refresh
+   token is expired, revoked, or invalid"` even for a token you just
+   generated seconds ago. This isn't really an expired-token error — it's a
+   site mismatch that happens to produce the same message. You must set
+   `ONEDEP_HOSTNAME` in the same shell, every time, before `login` (and
+   before any later `check`/`status`/`submit`, since the hostname itself is
+   **not** persisted to `config.toml` the way the token pair is):
+
+   ```bash
+   export ONEDEP_HOSTNAME=https://deposit-pdbe.wwpdb.org/deposition
+   ```
+
+   Add that line to your shell profile (e.g. `~/.zshrc`) so it's always set
+   — otherwise every new terminal session will silently fall back to the
+   wrong host and every command will fail with the same misleading error.
+4. In your own shell (not through Claude), with `ONEDEP_HOSTNAME` set as
+   above, run:
 
    ```bash
    ONEDEP_REFRESH_TOKEN="<paste-the-token>" .venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py login
@@ -33,16 +53,16 @@ web portal. Confirmed by reading the installed package source:
 
    This validates the token and writes it to
    `~/.config/onedep/config.toml`, outside the project directory.
-4. **Immediately after**, run `unset ONEDEP_REFRESH_TOKEN` in that shell.
+5. **Immediately after**, run `unset ONEDEP_REFRESH_TOKEN` in that shell.
    The token rotates on every use; onedep_lib prefers an env-var token over
    the one it just persisted to disk, so leaving the env var set will keep
    overriding the fresh, rotated token with the stale original and break
    future logins.
-5. Never paste the token into chat for Claude to type or store — run the
+6. Never paste the token into chat for Claude to type or store — run the
    `login` command yourself in your own terminal.
 
 After 30 days (or if `auth_setup.py check` reports unauthenticated),
-repeat steps 1–4 to get a new token.
+repeat steps 1–5 to get a new token.
 
 ## 3. EMPIAR access (only needed if you're also depositing raw image data)
 
@@ -92,14 +112,20 @@ use the EMDB map deposition path.
 ## 5. Verify
 
 Once ORCID login succeeds, `~/.config/onedep/config.toml` should exist with
-an `[auths.<fqdn>]` section (token values, not shown by the skill). Run
+an `[auths.<fqdn>]` section (token values, not shown by the skill). With
+`ONEDEP_HOSTNAME` still set to `https://deposit-pdbe.wwpdb.org/deposition`
+(see step 2.3 above — it's not persisted, so it must be set in this shell
+too), run
 `.venv/bin/python3 .claude/skills/emdb-deposition/scripts/auth_setup.py check`
 to confirm without exposing secrets.
 
 ## Open items
 
 - No wwPDB sandbox/staging deposition endpoint was found in `onedep_lib`'s
-  source — the default and only documented hostname is
-  `https://deposit.wwpdb.org/deposition`. Treat every `deposit()` call as
-  hitting production; there is no safe environment to test a real
-  submission against.
+  source — the library's built-in default hostname is
+  `https://deposit.wwpdb.org/deposition`, but tokens generated from the
+  PDBe portal (step 2 above) are scoped to
+  `https://deposit-pdbe.wwpdb.org/deposition`, so `ONEDEP_HOSTNAME` must
+  point there instead. Either way, treat every `deposit()` call as hitting
+  production; there is no safe environment to test a real submission
+  against.
