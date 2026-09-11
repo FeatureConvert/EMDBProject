@@ -30,6 +30,7 @@ Manifest schema (JSON, created/updated in place by this script):
 
 Subcommands:
   prepare --manifest <path>            create/resume local session, register files (no network beyond schema fetch, which is bundled locally)
+  preview --manifest <path>            write a human-readable review of exactly what submit will send (read-only, no network)
   dry-run --manifest <path>            check_required_files() only - never calls deposit()
   submit  --manifest <path> --confirm  calls deposit() - real, hard-to-undo submission to wwPDB
   status  --manifest <path>            poll get_status() for an already-submitted deposition
@@ -52,9 +53,13 @@ from common import (  # noqa: E402
     load_manifest,
     print_json,
     require_fields,
+    require_str,
     require_submission_safety_gates,
+    require_type,
     run_cli,
     save_manifest,
+    save_text,
+    short_repr,
 )
 
 MAP_LIKE_TYPES = {"EM_MAP", "EM_HALF_MAP", "EM_ADDITIONAL_MAP"}
@@ -88,20 +93,29 @@ def _issues_json(report) -> list[dict]:
 
 
 def _coerce_voxel_floats(voxel: dict, path: str) -> dict[str, float]:
-    """Convert each VOXEL_FIELDS value to float, rejecting non-finite
-    results (NaN/Infinity). json.loads() accepts the bare tokens NaN/
-    Infinity/-Infinity as a non-standard extension (Python's json module
+    """Convert each VOXEL_FIELDS value to float, rejecting booleans and
+    non-finite results (NaN/Infinity). json.loads() accepts the bare tokens
+    NaN/Infinity/-Infinity as a non-standard extension (Python's json module
     does this by default), so a manifest with "spacing_x": NaN parses
-    successfully and would otherwise sail through as a normal-looking
-    float with no complaint until wwPDB's own server-side validation
-    rejects it at submit time - catch it locally instead, matching this
-    project's general goal of catching what it can before that point."""
+    successfully - and bool is an int subclass, so "spacing_x": true would
+    otherwise silently become 1.0. Either would sail through as a
+    normal-looking float with no complaint until wwPDB's own server-side
+    validation sees it at submit time (or worse, a fabricated value gets
+    accepted) - catch them locally instead, matching this project's general
+    goal of catching what it can before that point."""
     out = {}
     for field in VOXEL_FIELDS:
+        raw = voxel[field]
+        if isinstance(raw, bool):
+            # float(True) is 1.0, so without this check a JSON true/false
+            # becomes a plausible-looking spacing/contour of 1.0/0.0.
+            fail(f"voxel.{field} for {path!r} is not a valid number: {raw!r}")
         try:
-            value = float(voxel[field])
-        except (TypeError, ValueError) as exc:
-            fail(f"voxel.{field} for {path!r} is not a valid number: {voxel[field]!r} ({exc})")
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            # OverflowError: a huge JSON integer (e.g. an exponent typo
+            # written out in full) is valid JSON but not a valid float.
+            fail(f"voxel.{field} for {path!r} is not a valid number: {short_repr(raw)} ({exc})")
         if not math.isfinite(value):
             fail(f"voxel.{field} for {path!r} must be a finite number, got {value}")
         out[field] = value
@@ -151,57 +165,88 @@ def _open_deposition(manifest: dict, config):
 
 
 def _validate_files_section(files: list[dict]) -> None:
-    """Validate manifest['files'] shape before any session is opened, so a bad
-    manifest fails clean instead of leaving an orphaned local onedep_lib
-    session behind (or crashing with a raw KeyError/TypeError from deep
-    inside the registration loop)."""
+    """Validate manifest['files'] shape AND values before any session is
+    opened, so a bad manifest fails clean instead of leaving an orphaned
+    local onedep_lib session behind (or crashing with a raw KeyError/
+    TypeError from deep inside the registration loop)."""
     seen_paths: dict[str, str] = {}
     for entry in files:
         require_fields(entry, ["path", "file_type"], label="Each files[] entry")
-        path = entry["path"]
-        ftype_raw = entry["file_type"]
         # require_fields only checked presence, not type - a numeric or
-        # null file_type/path would otherwise crash on the first .strip()
-        # call below with a generic AttributeError instead of pointing at
-        # which field and file is actually wrong.
-        if not isinstance(path, str):
-            fail(f"files[] entry 'path' must be a string, got {type(path).__name__}: {path!r}")
-        if not isinstance(ftype_raw, str):
-            fail(f"files[] entry 'file_type' must be a string, got {type(ftype_raw).__name__}: {ftype_raw!r}")
+        # null file_type/path would otherwise crash later with a generic
+        # AttributeError instead of pointing at which field is wrong.
+        path = require_str(entry["path"], "files[] entry 'path'")
+        ftype_raw = require_str(entry["file_type"], "files[] entry 'file_type'")
+        # Resolving the enum is a pure local lookup, so do it here too: an
+        # unknown/misspelled file_type must fail before deposit_init runs,
+        # not from inside the post-session registration loop.
+        ftype = file_type_enum(ftype_raw)
         if path in seen_paths:
             fail(
                 f"Manifest lists the same file path twice: {path!r} is used for both "
-                f"{seen_paths[path]!r} and {entry['file_type']!r}. Each physical file "
+                f"{seen_paths[path]!r} and {ftype_raw!r}. Each physical file "
                 "must be registered under exactly one file_type - onedep_lib doesn't "
                 "detect duplicate paths itself, so two entries pointing at the same "
                 "file would silently register as two distinct files."
             )
-        seen_paths[path] = entry["file_type"]
+        seen_paths[path] = ftype_raw
         # Only map-like files ever have their voxel data read (see the
         # MAP_LIKE_TYPES check in cmd_prepare's registration loop) - a
         # "voxel" block on e.g. an ENTRY_IMAGE entry is never used, so don't
         # demand it be complete; that would only produce a confusing error
         # for data that was never going to matter.
-        if "voxel" in entry and entry["file_type"].strip().upper() in MAP_LIKE_TYPES:
+        if "voxel" in entry and ftype.name in MAP_LIKE_TYPES:
             require_fields(entry["voxel"], list(VOXEL_FIELDS), label=f"voxel block for {path!r}")
+            # Values too, not just presence - a NaN/boolean/overflowing
+            # value must also fail before any session exists.
+            _coerce_voxel_floats(entry["voxel"], path)
+
+
+def _validate_manifest(manifest: dict) -> None:
+    """Every purely-local check, before any session side effect: a manifest
+    that fails here has cost nothing - no deposit_init session on disk, no
+    add_file registrations, no manifest mutations to clean up."""
+    require_fields(manifest, ["email", "users", "country", "em_subtype", "files"])
+
+    require_str(manifest["email"], "email")
+    users = require_type(manifest["users"], list, "Manifest's 'users' field", "a list")
+    if not users:
+        fail("Manifest's 'users' list is empty - at least one ORCID iD is required.")
+    for user in users:
+        require_str(user, "Each entry in 'users'")
+    # onedep_lib passes email/users through with no runtime validation of
+    # its own (annotations only), so a shape mistake here - e.g. one ORCID
+    # as a bare string instead of a list - would otherwise surface only at
+    # real wwPDB submission time.
+
+    coordinates = manifest.get("coordinates", False)
+    if not isinstance(coordinates, bool):
+        # A bool() coercion here would read the string "false" as True -
+        # silently inverting the field instead of erroring.
+        fail(
+            "Manifest's 'coordinates' field must be JSON true or false, "
+            f"got {type(coordinates).__name__}: {short_repr(coordinates)}"
+        )
+
+    # Enum resolution is a pure local lookup - validate before any session
+    # exists. _open_deposition re-resolves country when creating; the
+    # registration loop re-resolves per-entry file types.
+    country_enum(manifest["country"])
+    em_subtype_enum(manifest["em_subtype"])
+
+    # A "files" value that's a string or dict is truthy and iterable, but
+    # iterating it yields characters or dict keys - require the real type
+    # up front so the error points at the actual mistake.
+    files = require_type(manifest["files"], list, "Manifest's 'files' field", "a list")
+    if not files:
+        fail("Manifest has no files listed under 'files'.")
+    _validate_files_section(files)
 
 
 def cmd_prepare(manifest_path: str) -> None:
     manifest = load_manifest(manifest_path)
-    require_fields(manifest, ["email", "users", "country", "em_subtype", "files"])
-
-    files = manifest.get("files", [])
-    # Check the type explicitly before iterating: a "files" value that's a
-    # string or dict is truthy (so a bare `if not files` wouldn't catch it)
-    # and iterable, but iterating it yields characters or dict keys - each
-    # then fails the "must be an object" check with a confusing message
-    # (e.g. "got str: 'n'", the first character of the string) instead of
-    # a clear "files must be a list" error pointing at the actual mistake.
-    if not isinstance(files, list):
-        fail(f"Manifest's 'files' field must be a list, got {type(files).__name__}: {files!r}")
-    if not files:
-        fail("Manifest has no files listed under 'files'.")
-    _validate_files_section(files)
+    _validate_manifest(manifest)
+    files = manifest["files"]
 
     config = _build_config()
 
@@ -223,7 +268,9 @@ def cmd_prepare(manifest_path: str) -> None:
     try:
         dep.set_em_params(
             em_subtype=em_subtype_enum(manifest["em_subtype"]),
-            coordinates=bool(manifest.get("coordinates", False)),
+            # Validated as a real JSON boolean in _validate_manifest - no
+            # bool() coercion, which would read the string "false" as True.
+            coordinates=manifest.get("coordinates", False),
         )
 
         for entry in files:
@@ -281,6 +328,105 @@ def cmd_dry_run(manifest_path: str) -> None:
     print_json({"ok": report.ok, "issues": _issues_json(report)})
     if not report.ok:
         sys.exit(1)
+
+
+def _file_note(path: str) -> str:
+    """A short 'exists / size' note for a manifest file path, for the
+    preview. Never raises - a missing file is exactly what preview should
+    surface, not error on."""
+    p = Path(path)
+    try:
+        if p.is_file():
+            return f"{p.stat().st_size:,} bytes"
+        if p.exists():
+            return "EXISTS BUT IS NOT A FILE"
+        return "MISSING - not found on disk"
+    except OSError as exc:
+        return f"could not stat: {exc}"
+
+
+def _render_preview(manifest: dict, manifest_path: str) -> str:
+    """Render exactly what `submit` will send, as human-readable Markdown.
+    Values are shown post-validation/coercion (voxel numbers as the floats
+    that reach onedep_lib, enums as their resolved canonical names), so the
+    depositor reviews the real payload, not the raw manifest text. This is a
+    faithful rendering of the script's inputs, not a byte-level capture of
+    the onedep_lib API request."""
+    lines: list[str] = []
+    lines.append("# EMDB deposition preview")
+    lines.append("")
+    lines.append(f"Manifest: `{manifest_path}`")
+    lines.append("")
+    lines.append(
+        "This is a **read-only preview** of what `submit` will send to wwPDB. "
+        "Nothing here has been submitted. Review it, then run `dry-run` and "
+        "`submit --confirm` when you're ready."
+    )
+    lines.append("")
+
+    country = country_enum(manifest["country"])
+    subtype = em_subtype_enum(manifest["em_subtype"])
+    coordinates = manifest.get("coordinates", False)
+
+    lines.append("## Deposition metadata")
+    lines.append("")
+    lines.append(f"- **Depositor email:** {manifest['email']}")
+    lines.append(f"- **ORCID iD(s):** {', '.join(manifest['users'])}")
+    lines.append(f"- **Country:** {country.value} (`{country.name}`)")
+    lines.append(f"- **Experiment type:** EM")
+    lines.append(f"- **EM subtype:** {subtype.name}")
+    lines.append(f"- **Includes fitted coordinates:** {'yes' if coordinates else 'no'}")
+    lines.append("")
+
+    lines.append("## Files")
+    lines.append("")
+    for entry in manifest["files"]:
+        ftype = file_type_enum(entry["file_type"])
+        lines.append(f"- **{ftype.name}** — `{entry['path']}`  \n  ({_file_note(entry['path'])})")
+        voxel = entry.get("voxel")
+        if voxel and ftype.name in MAP_LIKE_TYPES:
+            coerced = _coerce_voxel_floats(voxel, entry["path"])
+            lines.append(
+                "  - voxel spacing (Å): "
+                f"x={coerced['spacing_x']}, y={coerced['spacing_y']}, z={coerced['spacing_z']}; "
+                f"contour level={coerced['contour']}"
+            )
+    lines.append("")
+
+    lines.append("## Not covered by this tool")
+    lines.append("")
+    lines.append(
+        "After `submit`, the five detailed experimental sections (Specimen "
+        "Preparation, Microscopy, Image Recording, Reconstruction, "
+        "Fitting/Interpretation) must still be completed in the OneDep web UI "
+        "before the entry can be validated and released. This preview and the "
+        "`submit` step cover deposition creation and core file upload only."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_preview(manifest_path: str) -> None:
+    manifest = load_manifest(manifest_path)
+    # Validate exactly as prepare does, so a preview can never show a payload
+    # that submit would reject - and so preview is a safe standalone check.
+    _validate_manifest(manifest)
+
+    preview = _render_preview(manifest, manifest_path)
+    preview_path = Path(manifest_path).with_name("submission_preview.md")
+    save_text(preview_path, preview)
+
+    print_json(
+        {
+            "success": True,
+            "preview_path": str(preview_path),
+            "preview_markdown": preview,
+            "note": (
+                "Read-only preview written. Nothing submitted. Show this to the "
+                "depositor, then run dry-run and submit --confirm when ready."
+            ),
+        }
+    )
 
 
 def cmd_submit(manifest_path: str, confirm: bool, force: bool) -> None:
@@ -396,33 +542,33 @@ def main() -> None:
     parser = JsonArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # Each subparser wires its handler via set_defaults(func=...) - unlike a
+    # hand-mirrored if/elif dispatch chain, a subcommand can't be registered
+    # without a handler, so there's no silent exit-0-with-no-output path.
     p = sub.add_parser("prepare")
     p.add_argument("--manifest", required=True)
+    p.set_defaults(func=lambda args: cmd_prepare(args.manifest))
+
+    p = sub.add_parser("preview")
+    p.add_argument("--manifest", required=True)
+    p.set_defaults(func=lambda args: cmd_preview(args.manifest))
 
     p = sub.add_parser("dry-run")
     p.add_argument("--manifest", required=True)
+    p.set_defaults(func=lambda args: cmd_dry_run(args.manifest))
 
     p = sub.add_parser("submit")
     p.add_argument("--manifest", required=True)
     p.add_argument("--confirm", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.set_defaults(func=lambda args: cmd_submit(args.manifest, args.confirm, args.force))
 
     p = sub.add_parser("status")
     p.add_argument("--manifest", required=True)
+    p.set_defaults(func=lambda args: cmd_status(args.manifest))
 
     args = parser.parse_args()
-
-    def dispatch() -> None:
-        if args.command == "prepare":
-            cmd_prepare(args.manifest)
-        elif args.command == "dry-run":
-            cmd_dry_run(args.manifest)
-        elif args.command == "submit":
-            cmd_submit(args.manifest, args.confirm, args.force)
-        elif args.command == "status":
-            cmd_status(args.manifest)
-
-    run_cli(dispatch)
+    run_cli(lambda: args.func(args))
 
 
 if __name__ == "__main__":

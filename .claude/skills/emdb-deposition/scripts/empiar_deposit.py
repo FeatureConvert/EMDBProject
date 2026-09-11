@@ -38,6 +38,7 @@ prevents that).
 
 Usage:
   python3 empiar_deposit.py validate --json-input <path>
+  python3 empiar_deposit.py preview  --json-input <path> [--data-dir <path>]
   python3 empiar_deposit.py submit --json-input <path> --data-dir <path> --confirm
       [--ascp PATH_TO_ASCP] [--globus UUID] [--thumbnail PATH]
       [--resume ENTRY_ID ENTRY_DIR] [--force]
@@ -57,6 +58,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import (  # noqa: E402
+    SUBMITTED_MARKER_SUFFIX,
     JsonArgumentParser,
     fail,
     load_manifest,
@@ -66,6 +68,8 @@ from common import (  # noqa: E402
     require_submission_safety_gates,
     run_cli,
     save_manifest,
+    save_text,
+    submitted_marker_path,
 )
 
 _ENTRY_ID_RE = re.compile(r"Your entry ID is (\d+) and unique data directory is (\S+)")
@@ -77,11 +81,17 @@ def _schema_path() -> Path:
     return Path(empiar_depositor.__file__).parent / "empiar_deposition.schema.json"
 
 
-def _submitted_marker_path(json_input_path: str) -> Path:
-    """Sidecar file recording a successful prior submission - empiar-depositor
-    doesn't give us a manifest-like state file of our own to persist an
-    entry_id into, unlike em_deposit.py's manifest.json."""
-    return Path(json_input_path).with_suffix(".submitted.json")
+def _reject_marker_named_input(json_input_path: str) -> None:
+    """A JSON_INPUT deliberately named *.submitted.json would collide with
+    the submission-marker sidecar scheme (common.submitted_marker_path) and
+    be misread as a marker by list_depositions.py - refuse it up front,
+    before any validation or submission work."""
+    if Path(json_input_path).name.endswith(SUBMITTED_MARKER_SUFFIX):
+        fail(
+            f"JSON_INPUT path must not end with {SUBMITTED_MARKER_SUFFIX!r} - that "
+            "suffix is reserved for the submission-marker sidecar files this "
+            "script writes after a successful submit. Rename the file and retry."
+        )
 
 
 def _validate(json_input_path: str) -> tuple[bool, list[dict]]:
@@ -110,10 +120,90 @@ def cmd_validate(json_input_path: str) -> None:
     # imageset's directory should plausibly exist under a data dir - not
     # checked here since JSON_INPUT alone doesn't carry the data root, but
     # cmd_submit checks --data-dir itself once it's known.
+    _reject_marker_named_input(json_input_path)
     ok, issues = _validate(json_input_path)
     print_json({"ok": ok, "issues": issues})
     if not ok:
         sys.exit(1)
+
+
+def _render_preview(json_input_path: str, data_dir: str | None, ok: bool, issues: list[dict]) -> str:
+    """Render what `submit` will send to EMPIAR as human-readable Markdown.
+    The JSON_INPUT file IS the submission payload, so this shows it verbatim
+    (pretty-printed) plus the schema-validation result and each imageset's
+    referenced directory - resolved under --data-dir when given, so the
+    depositor can confirm the data is where EMPIAR will look for it."""
+    data = load_manifest(json_input_path, label="JSON_INPUT")
+
+    lines: list[str] = []
+    lines.append("# EMPIAR deposition preview")
+    lines.append("")
+    lines.append(f"JSON_INPUT: `{json_input_path}`")
+    lines.append("")
+    lines.append(
+        "This is a **read-only preview** of what `submit` will send to EMPIAR. "
+        "Nothing has been submitted or transferred. Review it, then run "
+        "`submit --confirm` when you're ready."
+    )
+    lines.append("")
+
+    lines.append(f"## Schema validation: {'PASSED' if ok else 'FAILED'}")
+    lines.append("")
+    if issues:
+        for issue in issues:
+            lines.append(f"- `{issue['path']}`: {issue['message']}")
+    else:
+        lines.append("No schema issues.")
+    lines.append("")
+
+    title = data.get("title")
+    if title:
+        lines.append(f"**Title:** {title}")
+        lines.append("")
+
+    imagesets = data.get("imagesets")
+    if isinstance(imagesets, list) and imagesets:
+        lines.append(f"## Imagesets ({len(imagesets)})")
+        lines.append("")
+        for i, imgset in enumerate(imagesets):
+            name = imgset.get("name") if isinstance(imgset, dict) else None
+            directory = imgset.get("directory") if isinstance(imgset, dict) else None
+            lines.append(f"- **{name or f'imageset {i}'}**")
+            if directory is not None:
+                note = ""
+                if data_dir is not None:
+                    resolved = Path(data_dir) / str(directory).lstrip("/")
+                    note = "  — found" if resolved.exists() else "  — **NOT found under --data-dir**"
+                lines.append(f"  - directory: `{directory}`{note}")
+        lines.append("")
+
+    lines.append("## Full JSON_INPUT payload")
+    lines.append("")
+    lines.append("```json")
+    lines.append(json.dumps(data, indent=2))
+    lines.append("```")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_preview(json_input_path: str, data_dir: str | None) -> None:
+    _reject_marker_named_input(json_input_path)
+    ok, issues = _validate(json_input_path)
+    preview = _render_preview(json_input_path, data_dir, ok, issues)
+    preview_path = Path(json_input_path).with_suffix(".preview.md")
+    save_text(preview_path, preview)
+    print_json(
+        {
+            "success": True,
+            "schema_ok": ok,
+            "preview_path": str(preview_path),
+            "preview_markdown": preview,
+            "note": (
+                "Read-only preview written. Nothing submitted or transferred. "
+                "Show this to the depositor, then run submit --confirm when ready."
+            ),
+        }
+    )
 
 
 def _default_ascp_path() -> str | None:
@@ -142,7 +232,8 @@ def cmd_submit(
     thumbnail: str | None,
     resume: tuple[str, str] | None,
 ) -> None:
-    marker_path = _submitted_marker_path(json_input_path)
+    _reject_marker_named_input(json_input_path)
+    marker_path = submitted_marker_path(json_input_path)
     if resume:
         # --resume is specifically for continuing an interrupted transfer
         # against the SAME entry the marker (if any) already recorded -
@@ -283,8 +374,16 @@ def main() -> None:
     parser = JsonArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # Handlers wired via set_defaults(func=...) - see em_deposit.main() for
+    # why this beats a hand-mirrored if/elif dispatch chain.
     p = sub.add_parser("validate")
     p.add_argument("--json-input", required=True)
+    p.set_defaults(func=lambda args: cmd_validate(args.json_input))
+
+    p = sub.add_parser("preview")
+    p.add_argument("--json-input", required=True)
+    p.add_argument("--data-dir", help="optional: resolve each imageset's directory under this root")
+    p.set_defaults(func=lambda args: cmd_preview(args.json_input, args.data_dir))
 
     p = sub.add_parser("submit")
     p.add_argument("--json-input", required=True)
@@ -295,25 +394,21 @@ def main() -> None:
     p.add_argument("--globus")
     p.add_argument("--thumbnail")
     p.add_argument("--resume", nargs=2, metavar=("ENTRY_ID", "ENTRY_DIR"))
+    p.set_defaults(
+        func=lambda args: cmd_submit(
+            args.json_input,
+            args.data_dir,
+            args.confirm,
+            args.force,
+            args.ascp,
+            args.globus,
+            args.thumbnail,
+            tuple(args.resume) if args.resume else None,
+        )
+    )
 
     args = parser.parse_args()
-
-    def dispatch() -> None:
-        if args.command == "validate":
-            cmd_validate(args.json_input)
-        elif args.command == "submit":
-            cmd_submit(
-                args.json_input,
-                args.data_dir,
-                args.confirm,
-                args.force,
-                args.ascp,
-                args.globus,
-                args.thumbnail,
-                tuple(args.resume) if args.resume else None,
-            )
-
-    run_cli(dispatch)
+    run_cli(lambda: args.func(args))
 
 
 if __name__ == "__main__":

@@ -56,6 +56,58 @@ def test_validate_rejects_missing_required_fields(tmp_path, capsys):
     assert len(out["issues"]) > 0
 
 
+def test_preview_writes_review_file_for_valid_input(tmp_path, capsys):
+    isolated = tmp_path / "json_input.json"
+    isolated.write_text(_bundled_example().read_text())
+
+    empiar_deposit.cmd_preview(str(isolated), None)
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["schema_ok"] is True
+
+    preview_path = tmp_path / "json_input.preview.md"
+    assert preview_path.exists()
+    text = preview_path.read_text()
+    assert "Schema validation: PASSED" in text
+    assert "Full JSON_INPUT payload" in text
+
+
+def test_preview_reports_schema_failure_without_exiting(tmp_path, capsys):
+    bad = tmp_path / "json_input.json"
+    bad.write_text(json.dumps({"title": "missing the rest"}))
+
+    # A schema-invalid input is still previewable - the depositor should see
+    # WHAT is wrong, so preview reports schema_ok=false rather than fail()ing.
+    empiar_deposit.cmd_preview(str(bad), None)
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["schema_ok"] is False
+    assert "Schema validation: FAILED" in (tmp_path / "json_input.preview.md").read_text()
+
+
+def test_preview_rejects_marker_named_input(tmp_path, capsys):
+    collide = tmp_path / "dataset.submitted.json"
+    collide.write_text(json.dumps({"title": "x"}))
+    with pytest.raises(SystemExit):
+        empiar_deposit.cmd_preview(str(collide), None)
+    out = json.loads(capsys.readouterr().out)
+    assert ".submitted.json" in out["error"]
+
+
+def test_rejects_json_input_named_like_a_marker(tmp_path, capsys):
+    # A JSON_INPUT deliberately named *.submitted.json collides with the
+    # submission-marker sidecar scheme and would be misread as a marker by
+    # list_depositions.py - refuse it up front, before any validation.
+    collide = tmp_path / "dataset.submitted.json"
+    collide.write_text(json.dumps({"title": "x"}))
+    with pytest.raises(SystemExit) as exc:
+        empiar_deposit.cmd_validate(str(collide))
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert ".submitted.json" in out["error"]
+
+
 def test_error_sort_key_handles_mixed_int_and_str_path_elements():
     # cmd_validate sorts jsonschema errors by path before reporting them.
     # jsonschema error paths mix str (object keys) and int (array indices),

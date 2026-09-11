@@ -70,8 +70,10 @@ Create a working directory per deposition at the project root:
 `depositions/<descriptive-slug>/manifest.json` for EMDB, or
 `depositions/<descriptive-slug>/empiar/json_input.json` for EMPIAR
 (EMPIAR additionally records `entry_id`/`entry_directory` in a sidecar
-`<json_input>.submitted.json` next to it after a successful submit, kept
-separate from the JSON_INPUT payload deliberately). This directory is
+file next to it after a successful submit — the JSON_INPUT's `.json` suffix
+is replaced with `.submitted.json`, so `json_input.json` yields
+`json_input.submitted.json` — kept separate from the JSON_INPUT payload
+deliberately). This directory is
 gitignored — it holds real sample metadata and dep_ids, not skill code.
 Pick the slug from context (sample name, EMD accession if known) rather
 than asking the user to name it if it's obvious.
@@ -107,7 +109,22 @@ opening and comparing each manifest by hand:
    (a real mistake to catch before it reaches wwPDB, not just a cosmetic
    check).
 
-4. **Dry-run** before ever proposing a real submission:
+4. **Preview** — write a human-readable review of exactly what `submit`
+   will send, and show it to the depositor before proceeding (read-only, no
+   network, no session created):
+   ```bash
+   .venv/bin/python3 .claude/skills/emdb-deposition/scripts/em_deposit.py preview --manifest depositions/<slug>/manifest.json
+   ```
+   This validates the manifest the same way `prepare` does, then writes
+   `depositions/<slug>/submission_preview.md` (and returns the same Markdown
+   in `preview_markdown`) showing the values *as they'll be sent* — country
+   and subtype resolved to their canonical forms, voxel numbers as the
+   coerced floats, each file's on-disk size or a MISSING flag. Present this
+   to the user as the review artifact before any real submission. It's a
+   faithful rendering of the script's inputs, not a byte-level capture of
+   the API request.
+
+5. **Dry-run** before ever proposing a real submission:
    ```bash
    .venv/bin/python3 .claude/skills/emdb-deposition/scripts/em_deposit.py dry-run --manifest depositions/<slug>/manifest.json
    ```
@@ -115,11 +132,11 @@ opening and comparing each manifest by hand:
    through the listed issues (missing files, wrong counts) and fix the
    manifest, then re-run prepare/dry-run — don't proceed to submit.
 
-5. **Get explicit confirmation, then submit.** This is the one real,
+6. **Get explicit confirmation, then submit.** This is the one real,
    hard-to-undo action in this whole flow — it creates a live deposition
    on wwPDB's production system (there is no sandbox to test against, per
-   `references/setup_checklist.md`). Show the user the dry-run report and
-   get an explicit "yes, submit" in chat. Only then run:
+   `references/setup_checklist.md`). Show the user the preview and dry-run
+   report and get an explicit "yes, submit" in chat. Only then run:
    ```bash
    .venv/bin/python3 .claude/skills/emdb-deposition/scripts/em_deposit.py submit --manifest depositions/<slug>/manifest.json --confirm
    ```
@@ -130,12 +147,12 @@ opening and comparing each manifest by hand:
    as a signal to check with the user rather than adding `--force`
    automatically.
 
-6. **Status checks**, any time after submit:
+7. **Status checks**, any time after submit:
    ```bash
    .venv/bin/python3 .claude/skills/emdb-deposition/scripts/em_deposit.py status --manifest depositions/<slug>/manifest.json
    ```
 
-7. After a successful submit, remind the user about the OneDep web UI step
+8. After a successful submit, remind the user about the OneDep web UI step
    for the detailed experimental sections (see Scope, above), and mention
    that their eventual publication should cite EMDB itself alongside the
    `EMD-` accession — see [README.md's Citing section](../../../README.md#citing)
@@ -162,7 +179,20 @@ codes, `experiment_type` codes, imageset `category` codes).
    ```
    Fix and re-run until `"ok": true`.
 
-2. **Confirm, then submit.** Same rule as EMDB: show the validation
+2. **Preview** — write a human-readable review of the submission and show
+   it to the depositor (read-only, no network, no transfer):
+   ```bash
+   .venv/bin/python3 .claude/skills/emdb-deposition/scripts/empiar_deposit.py preview --json-input depositions/<slug>/empiar/json_input.json [--data-dir <path-to-data>]
+   ```
+   Writes `depositions/<slug>/empiar/json_input.preview.md` (and returns the
+   same Markdown in `preview_markdown`): the schema-validation result, the
+   title, each imageset and its referenced directory (resolved under
+   `--data-dir` when given, so you can confirm the data is where EMPIAR will
+   look), and the full pretty-printed JSON_INPUT payload. Since JSON_INPUT
+   *is* the submission format, this is a faithful view of what `submit`
+   sends. Present it to the user as the review artifact before submitting.
+
+3. **Confirm, then submit.** Same rule as EMDB: show the preview/validation
    result, get an explicit "yes" before adding `--confirm`. This step is
    even more irreversible than it looks: `empiar-depositor` creates the
    live EMPIAR entry via its API **before** attempting any data transfer,
@@ -194,16 +224,17 @@ codes, `experiment_type` codes, imageset `category` codes).
    empiar-depositor's own output — relay these to the user, they're the
    citable accession info. If a `warning` field is present, the entry ID
    couldn't be parsed cleanly - surface that to the user rather than
-   treating the run as a normal success. A sidecar
-   `<json_input>.submitted.json` marker is written next to the JSON_INPUT
-   file recording them; re-running `submit` against the same JSON_INPUT
+   treating the run as a normal success. A sidecar marker is written next
+   to the JSON_INPUT file recording them (the `.json` suffix replaced with
+   `.submitted.json`, e.g. `json_input.json` → `json_input.submitted.json`);
+   re-running `submit` against the same JSON_INPUT
    after a successful run refuses unless you also pass `--force` (or
    `--resume`, above), same pattern as EMDB's `remote_dep_id` guard.
    Mention that their publication should also cite EMPIAR itself alongside
    the `EMPIAR-` accession — see
    [README.md's Citing section](../../../README.md#citing).
 
-3. If `submit` fails because `EMPIAR_API_TOKEN` or `EMPIAR_TRANSFER_PASS`
+4. If `submit` fails because `EMPIAR_API_TOKEN` or `EMPIAR_TRANSFER_PASS`
    isn't set, point the user at `references/setup_checklist.md` — don't
    ask them to give you the value directly.
 

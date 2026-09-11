@@ -78,6 +78,52 @@ def test_prepare_sets_em_params_and_registers_files(mock_deposit_init, mock_conf
     assert all("file_id" in f for f in saved["files"])
 
 
+def test_preview_writes_review_file_without_touching_the_network(tmp_path, capsys):
+    # preview is read-only and local: it must not import a session or reach
+    # onedep_lib's network path. It renders coerced values and flags a
+    # missing file rather than erroring on it.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"]["spacing_x"] = 1  # int -> shown as 1.0
+    manifest["country"] = "United Kingdom"  # display string -> resolved to UK
+    manifest_path.write_text(json.dumps(manifest))
+
+    em_deposit.cmd_preview(str(manifest_path))
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+
+    preview_path = tmp_path / "submission_preview.md"
+    assert preview_path.exists()
+    text = preview_path.read_text()
+    assert "United Kingdom (`UK`)" in text
+    assert "x=1.0" in text  # coerced int -> float
+    assert "**EM subtype:** SPA" in text
+    # no session key was written to the manifest
+    assert "session_id" not in json.loads(manifest_path.read_text())
+
+
+def test_preview_reports_missing_file(tmp_path, capsys):
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["path"] = str(tmp_path / "gone.mrc")  # never created
+    manifest_path.write_text(json.dumps(manifest))
+
+    em_deposit.cmd_preview(str(manifest_path))
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert "MISSING" in (tmp_path / "submission_preview.md").read_text()
+
+
+def test_preview_validates_manifest_first(tmp_path, fails_json):
+    # A preview must never render a payload submit would reject - it runs
+    # the same validation as prepare.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"]["spacing_x"] = float("inf")
+    manifest_path.write_text(json.dumps(manifest))
+    fails_json(lambda: em_deposit.cmd_preview(str(manifest_path)), "finite number")
+
+
 def test_prepare_fails_cleanly_on_missing_required_field(tmp_path, capsys):
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
@@ -115,32 +161,97 @@ def test_prepare_fails_cleanly_when_files_is_not_a_list(bad_files, tmp_path, cap
     assert "must be a list" in out["error"]
 
 
-def test_prepare_fails_cleanly_when_file_type_is_not_a_string(tmp_path, capsys):
+@pytest.mark.parametrize("field, bad_value", [("file_type", 123), ("path", 42)])
+def test_prepare_fails_cleanly_when_files_entry_field_is_not_a_string(field, bad_value, tmp_path, fails_json):
+    # require_fields only checked presence; a numeric/null path or file_type
+    # would otherwise crash later with a generic AttributeError instead of
+    # naming which field and file is wrong.
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
-    manifest["files"][1]["file_type"] = 123
+    manifest["files"][1][field] = bad_value
     manifest_path.write_text(json.dumps(manifest))
 
-    with pytest.raises(SystemExit) as exc:
-        em_deposit.cmd_prepare(str(manifest_path))
-    assert exc.value.code == 1
-    out = json.loads(capsys.readouterr().out)
-    assert out["success"] is False
-    assert "must be a string" in out["error"]
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "must be a string")
 
 
-def test_prepare_fails_cleanly_when_path_is_not_a_string(tmp_path, capsys):
+@pytest.mark.parametrize("bad_value", [True, False])
+def test_prepare_rejects_boolean_voxel_values(bad_value, tmp_path, fails_json):
+    # bool is an int subclass, so float(True)==1.0 - without an explicit
+    # guard a JSON true/false voxel value silently becomes a plausible-
+    # looking spacing/contour of 1.0/0.0 instead of being rejected.
     manifest_path = _manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
-    manifest["files"][1]["path"] = 42
+    manifest["files"][0]["voxel"]["spacing_x"] = bad_value
     manifest_path.write_text(json.dumps(manifest))
 
-    with pytest.raises(SystemExit) as exc:
-        em_deposit.cmd_prepare(str(manifest_path))
-    assert exc.value.code == 1
-    out = json.loads(capsys.readouterr().out)
-    assert out["success"] is False
-    assert "must be a string" in out["error"]
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "not a valid number")
+
+
+def test_prepare_rejects_overflowing_integer_voxel_value(tmp_path, fails_json):
+    # A huge integer is valid JSON but float() raises OverflowError, which
+    # must be caught with the same clean per-field message, not escape to
+    # run_cli's generic handler.
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"]["spacing_x"] = int("1" + "0" * 400)
+    manifest_path.write_text(json.dumps(manifest))
+
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "not a valid number")
+
+
+@pytest.mark.parametrize("bad_value", ["false", "no", 1, 0])
+def test_prepare_rejects_non_boolean_coordinates(bad_value, tmp_path, fails_json):
+    # bool("false") is True - a bool() coercion would silently invert the
+    # field, registering an atomic model the user never had. Must error.
+    manifest_path = _manifest(tmp_path, coordinates=bad_value)
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "coordinates")
+
+
+@pytest.mark.parametrize("bad_users", ["0000-0002-5109-8728", [], [123], None])
+def test_prepare_rejects_malformed_users(bad_users, tmp_path, fails_json):
+    # onedep_lib passes users through with no runtime validation, so one
+    # ORCID as a bare string (instead of a list) would otherwise reach real
+    # wwPDB submit unchecked.
+    manifest_path = _manifest(tmp_path, users=bad_users)
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "users")
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_validates_before_opening_a_session(mock_deposit_init, mock_config_cls, tmp_path, fails_json):
+    # A local validation failure (here, a NaN voxel value) must fail BEFORE
+    # deposit_init is ever called - otherwise a bad manifest leaves an
+    # orphaned onedep_lib session behind, the exact thing the pre-session
+    # validation pass exists to prevent.
+    mock_config_cls.load.return_value = _fake_config()
+    mock_deposit_init.return_value = MagicMock(session_id="sess-1")
+
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["voxel"]["spacing_x"] = float("nan")
+    manifest_path.write_text(json.dumps(manifest))  # json.dumps emits bare NaN by default
+
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "finite number")
+    mock_deposit_init.assert_not_called()
+
+
+@patch("onedep_lib.config.DepositConfig")
+@patch("onedep_lib.deposit_init")
+def test_prepare_rejects_unknown_file_type_before_opening_a_session(
+    mock_deposit_init, mock_config_cls, tmp_path, fails_json
+):
+    # Enum resolution is a pure local lookup - an unknown file_type must
+    # fail before deposit_init, not from inside the registration loop.
+    mock_config_cls.load.return_value = _fake_config()
+    mock_deposit_init.return_value = MagicMock(session_id="sess-1")
+
+    manifest_path = _manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][1]["file_type"] = "EM_MPA"  # typo for EM_MAP
+    manifest_path.write_text(json.dumps(manifest))
+
+    fails_json(lambda: em_deposit.cmd_prepare(str(manifest_path)), "Unknown file type")
+    mock_deposit_init.assert_not_called()
 
 
 def test_prepare_rejects_duplicate_file_paths(tmp_path, capsys):
@@ -465,8 +576,14 @@ def test_submit_reports_dep_id_even_if_save_manifest_fails(mock_resume, mock_con
     mock_resume.return_value = dep
 
     manifest_path = _manifest(tmp_path, session_id="sess-1")
-    with patch("em_deposit.save_manifest", side_effect=OSError("disk full")):
+    with patch("em_deposit.save_manifest", side_effect=OSError("disk full")) as mock_save:
         em_deposit.cmd_submit(str(manifest_path), confirm=True, force=False)
+
+    # Assert the patch actually reached the module under test - otherwise
+    # (as happened before conftest registered modules in sys.modules) this
+    # test passes vacuously: the real save_manifest succeeds against tmp_path,
+    # no OSError is ever raised, and the try/except being tested is untested.
+    assert mock_save.called, "patched save_manifest was never called - test is vacuous"
 
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is True
