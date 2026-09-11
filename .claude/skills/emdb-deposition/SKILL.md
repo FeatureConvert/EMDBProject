@@ -85,6 +85,21 @@ opening and comparing each manifest by hand:
 .venv/bin/python3 .claude/skills/emdb-deposition/scripts/list_depositions.py
 ```
 
+To look up an already-released EMDB entry — e.g. to confirm a `related_emdb`
+accession exists before citing it, or to pull an existing entry's metadata —
+use `emdb_lookup.py` (read-only, anonymous public API; the one script that
+makes network calls):
+```bash
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/emdb_lookup.py lookup --accession EMD-8000
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/emdb_lookup.py exists --accession EMD-8000
+```
+
+Non-EM experiment types: this skill is cryo-EM-focused, but `em_deposit.py`
+also accepts an optional manifest `experiment_type` (EM default; also XRAY /
+NMR / SSNMR / NEUTRON / FIBER / EC). For those, omit `em_subtype`/voxel and
+register the file types that method needs; `dry-run` (check_required_files)
+enforces the per-method rules.
+
 ## EMDB map deposition workflow
 
 1. **Gather what's needed conversationally**: depositor email, ORCID

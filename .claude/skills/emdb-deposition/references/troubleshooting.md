@@ -173,10 +173,10 @@ read the message text itself, it's usually specific:
 
 ## Every script's error contract
 
-`auth_setup.py`, `em_deposit.py`, `empiar_deposit.py`, and
-`list_depositions.py` each wrap their entire `main()` dispatch in
-`common.run_cli()`, which catches literally any exception (not an enumerated
-list) and converts it to
+`auth_setup.py`, `em_deposit.py`, `empiar_deposit.py`,
+`list_depositions.py`, and `emdb_lookup.py` each wrap their entire `main()`
+dispatch in `common.run_cli()`, which catches literally any exception (not an
+enumerated list) and converts it to
 `{"success": false, "error": "<ExceptionType>: <message>"}` on stdout with
 exit code 1. CLI *usage* errors (a missing/invalid argument, an unknown
 subcommand) are covered too: every script uses `common.JsonArgumentParser`,
@@ -185,8 +185,12 @@ whose `error()` routes argparse failures through the same JSON contract
 The only things `run_cli()` doesn't catch are `SystemExit` (raised by
 `fail()`, and by argparse for `--help`, which correctly still prints its
 plain-text help and exits 0) and `KeyboardInterrupt`. If you see a raw
-Python traceback instead of JSON from any of these four scripts, that's
+Python traceback instead of JSON from any of these five scripts, that's
 itself a bug worth reporting — it should be structurally impossible.
+
+(`emdb_lookup.py` is the one script that makes network calls — read-only,
+anonymous, to the public EMDB API. A network failure or a genuine 404 is
+still reported through the same JSON contract, not as a traceback.)
 
 ## `empiar_deposit.py`
 

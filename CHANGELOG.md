@@ -4,6 +4,31 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 is pre-release and not yet versioned.
 
+## [Unreleased] — 2026-09-11 (part 5: read-only EMDB lookups)
+
+Implemented ROADMAP item 3.
+
+### Added
+
+- **`emdb_lookup.py`** — read-only, anonymous lookups against the public
+  EMDB API (`emdb` package, re-added to requirements). `lookup --accession
+  EMD-XXXX` returns a compact metadata summary (title, authors, sample,
+  method, resolution, map format/dimensions/pixel spacing/contour, related
+  PDB/EMDB/EMPIAR ids); `exists --accession EMD-XXXX` gives a robust yes/no.
+  Network is hit only at call time (not import). It's the only script that
+  touches the network. Verified live against EMD-8000 and a nonexistent
+  accession.
+- The `exists` check handles the installed `emdb` 0.1.12 gotcha where a
+  genuine 404 is re-wrapped as `EMDBAPIError` (not `EMDBNotFoundError`): a
+  not-found is reported as `exists: false`, but a real network/server error
+  is surfaced rather than misreported as "absent".
+
+### Internal / tests
+
+- Network fully mocked in tests (`test_emdb_lookup.py`), including the 404,
+  real-error-reraise, nested-author-shape, and sparse-entry paths.
+  168 → 176 tests, all passing.
+
 ## [Unreleased] — 2026-09-11 (part 4: other experiment types + related entries)
 
 Implemented ROADMAP item 2, and the buildable part of item 1.

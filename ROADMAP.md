@@ -13,7 +13,8 @@ header sniff), and **5** (JSON Schema + ORCID/email checks) are
 **partially** done: the buildable part (a `related_emdb` field + web-UI
 linking reminders) is in; the automated cross-referencing is blocked
 upstream (onedep_lib has no such API). Item **3** (read-only lookups) is
-next up.
+**implemented** as `emdb_lookup.py`. Every roadmap item is now either done
+or, for composite-map automation, blocked on an upstream API.
 
 ## 1. Composite map deposition support — PARTIAL (core blocked upstream)
 
@@ -89,26 +90,25 @@ depends entirely on whether the user works with other experiment types.
 **Recommendation:** only pursue if asked - this project's identity is
 EMDB/EMPIAR-specific by design.
 
-## 3. Read-only EMDB/EMPIAR lookups (re-add the `emdb` package)
+## 3. Read-only EMDB/EMPIAR lookups (re-add the `emdb` package) — DONE
 
-**What it is:** Earlier this project depended on `emdb` (a read-only EMDB
-REST API client) but it was removed in a review pass for being genuinely
-unused - confirmed via grep, zero imports anywhere. A legitimate future
-use: checking whether a related EMD-/EMPIAR- accession actually exists
-before referencing it (relevant for composite-map cross-referencing,
-item 1 above, or for a depositor double-checking a citation), or pulling
-metadata from an existing entry to pre-fill a new deposition's manifest
-fields.
+**Status: implemented** as `emdb_lookup.py` (and `emdb` re-added to
+requirements). Two subcommands, both read-only/anonymous against the public
+EMDB API, network only at call time:
+- `lookup --accession EMD-XXXX` → compact JSON summary (title, authors,
+  sample, method, resolution, map format/dimensions/pixel spacing/contour,
+  related PDB/EMDB ids, and linked EMPIAR ids via the entry's annotations).
+- `exists --accession EMD-XXXX` → yes/no, robust to the installed `emdb`
+  0.1.12 gotcha where a genuine 404 surfaces as `EMDBAPIError` (not
+  `EMDBNotFoundError`); a real network/server error is surfaced, not
+  misreported as "absent".
 
-**Why it's not built:** No current workflow in this project needs it -
-adding it back without a concrete use ready to consume it would just be
-restoring dead weight, the exact thing that got it removed.
+Verified live against EMD-8000 (real metadata) and EMD-99999999 (correctly
+"not found"). Note: `emdb` is EMDB-only — there is no standalone EMPIAR
+lookup; EMPIAR appears only as a cross-reference on an EMDB entry.
 
-**Effort:** Small (the package already exists and was proven to work).
-**Value:** Real but currently speculative - becomes valuable specifically
-alongside item 1 (composite maps) or a "look up related entry" feature no
-one has asked for yet. **Recommendation:** revisit only if item 1 happens,
-or if the user has a concrete lookup need.
+Pairs with item 1: use `exists` to confirm a `related_emdb` accession before
+citing it.
 
 ## 4. Local sanity-check map file contents before registering — DONE
 

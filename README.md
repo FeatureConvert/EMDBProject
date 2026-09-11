@@ -12,6 +12,7 @@ libraries (`onedep_lib`, `empiar-depositor`) instead of browser automation.
 - [Tutorial: depositing an EMDB map](#tutorial-depositing-an-emdb-map)
 - [Tutorial: depositing to EMPIAR](#tutorial-depositing-to-empiar)
 - [Checking on all your depositions at once](#checking-on-all-your-depositions-at-once)
+- [Looking up a released EMDB entry](#looking-up-a-released-emdb-entry)
 - [Running the tests](#running-the-tests)
 - [Scope and honesty check](#scope-and-honesty-check)
 - [Troubleshooting](#troubleshooting)
@@ -39,6 +40,7 @@ unnecessary once we found these.
 │   ├── em_deposit.py                 # EMDB map deposition: prepare / preview / dry-run / submit / status
 │   ├── empiar_deposit.py             # EMPIAR raw-data deposition: validate / preview / submit
 │   ├── list_depositions.py           # read-only: summarize every local deposition's state at a glance
+│   ├── emdb_lookup.py                # read-only: look up a released EMDB entry (public API) / check an accession exists
 │   ├── common.py                     # shared manifest/validation/safety-gate helpers
 │   └── tests/                        # unit tests for every script, mocking both libraries entirely
 └── references/
@@ -449,6 +451,25 @@ no network or auth needed:
 deposition. Pass `--depositions-dir <path>` to point at a different
 location.
 
+## Looking up a released EMDB entry
+
+`emdb_lookup.py` queries the **public** EMDB API (read-only, anonymous, no
+token) for an already-released entry — useful to confirm a related accession
+exists before citing it in a manifest's `related_emdb`, or to pull an
+entry's metadata:
+
+```bash
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/emdb_lookup.py lookup --accession EMD-8000
+.venv/bin/python3 .claude/skills/emdb-deposition/scripts/emdb_lookup.py exists --accession EMD-8000
+```
+
+`lookup` returns a compact summary (title, authors, sample, method,
+resolution, map format/dimensions/pixel spacing/contour, and related
+PDB/EMDB/EMPIAR ids). `exists` answers a plain yes/no — a malformed accession
+and a genuine 404 both report `"exists": false`, while a real network/server
+error is surfaced as an error rather than a false "absent". This is the only
+script that touches the network.
+
 ## Running the tests
 
 ```bash
@@ -553,9 +574,11 @@ validated locally. EM is the focus, but the manifest's optional
 `experiment_type` field also drives X-ray/NMR/etc. depositions (onedep_lib
 is experiment-type-agnostic), and an optional `related_emdb` list records
 composite-map cross-references for the depositor to link in the OneDep web
-UI (the deposition API has no cross-referencing call). 168 tests currently
-pass. See [`ROADMAP.md`](ROADMAP.md) for what remains (composite-map
-*automation* is blocked upstream; read-only lookups) and one idea that was
-investigated and deliberately rejected. Real `submit`/transfer has not yet
+UI (the deposition API has no cross-referencing call). A read-only
+`emdb_lookup.py` queries the public EMDB API to verify a related accession
+or pull an existing entry's metadata. 176 tests currently pass. See
+[`ROADMAP.md`](ROADMAP.md) for what remains (composite-map *automation* is
+blocked upstream) and one idea that was investigated and deliberately
+rejected. Real `submit`/transfer has not yet
 been exercised against production wwPDB/EMPIAR — that only happens when
 you're ready with an actual deposition.
