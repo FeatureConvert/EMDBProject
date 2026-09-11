@@ -7,37 +7,66 @@ that are the user's to make, not something to build unsupervised. See
 for one small, unambiguous addition, and the "considered and rejected" note
 at the end for one that deliberately wasn't.
 
-**Status update:** items **4** (local MRC header sniff) and **5** (a JSON
-Schema for `manifest.json`) have since been **implemented** — see the
-`DONE` markers on each. Items 1–3 remain open pending the user's call.
+**Status update:** items **2** (other experiment types), **4** (local MRC
+header sniff), and **5** (JSON Schema + ORCID/email checks) are
+**implemented** — see the `DONE` markers. Item **1** (composite maps) is
+**partially** done: the buildable part (a `related_emdb` field + web-UI
+linking reminders) is in; the automated cross-referencing is blocked
+upstream (onedep_lib has no such API). Item **3** (read-only lookups) is
+next up.
 
-## 1. Composite map deposition support
+## 1. Composite map deposition support — PARTIAL (core blocked upstream)
 
-**What it is:** EMDB has a community-recommended workflow (flagged in this
-project's very first research pass, before any code existed) for cryo-EM
-structures assembled from multiple focused refinements of different
-regions plus an unfocused consensus map. Each piece — the composite map,
-the consensus map, and each focused refinement — must be deposited as its
-**own separate EMDB entry**, cross-referenced through a "Related entries"
-mechanism.
+**What it is:** EMDB has a community-recommended workflow for cryo-EM
+structures assembled from multiple focused refinements plus an unfocused
+consensus map. Each piece — composite, consensus, each focused refinement —
+is deposited as its **own separate EMDB entry**, cross-referenced through a
+"Related entries" mechanism.
 
-**Why it's not built:** This project currently assumes one manifest = one
-map = one entry. Composite support means:
-- A new manifest concept for a *group* of related depositions (composite +
-  consensus + N focused refinements), not just a single map.
-- Cross-referencing logic — does `onedep_lib` expose a "related entries"
-  API? Not yet verified against the installed package; this needs its own
-  Phase-1-style spike before any code gets written, the same way this
-  project's original `onedep_lib` auth/session behavior needed verifying
-  against source rather than assumed from docs.
-- A real question for the user: do they actually do composite-map
-  refinements, or is this solving a problem they don't have? Ask before
-  building.
+**Spike result (the unknown, now resolved):** the installed `onedep_lib`
+exposes **no** deposition-to-deposition cross-referencing API. The only
+related-* symbols are two dormant fields on the internal `Experiment`
+dataclass (`related_emdb`, `related_bmrb`) — no public setter, not persisted
+in a `LocalSession`, never populated by `deposit_init`/`deposit()`. They
+semantically link a *single* deposition to a *pre-existing* archive entry,
+not compose a group. So automated cross-referencing **cannot** be built on
+the current library; it would need an upstream API.
 
-**Effort:** Medium-large. **Value:** High if the user's actual workflow
-uses composite maps; zero otherwise. **Recommendation:** ask first.
+**What was built instead:** an optional `related_emdb` list in the manifest
+(format-validated `EMD-XXXXX` accessions). `preview` and `submit` surface
+these and instruct the depositor to link them by hand in the OneDep web UI's
+"Related entries" section — the same "this part is done in the web UI" model
+the project already uses for the five detailed experimental sections. Each
+map is still its own deposition (its own manifest); this just records and
+reminds about the relationships.
 
-## 2. Other experiment types (X-ray, NMR, etc.)
+**Still not built (needs upstream or a design decision):** a single "group"
+manifest that drives N related depositions in one command, and any automated
+cross-referencing. Both await either an `onedep_lib` API or an explicit
+decision to orchestrate multiple depositions locally.
+
+**Recommendation:** the manual-linking support covers the realistic case
+today; revisit full automation only if onedep_lib gains a cross-reference
+API. The read-only `emdb` lookup (item 3) pairs well here for confirming a
+related accession exists before citing it.
+
+## 2. Other experiment types (X-ray, NMR, etc.) — DONE
+
+**Status: implemented** (backward-compatibly). The manifest takes an optional
+`experiment_type` (default `EM`; also `XRAY`, `NMR`, `SSNMR`, `NEUTRON`,
+`FIBER`, `EC`). Verified against the installed `onedep_lib`: `deposit_init`
+is experiment-type-agnostic and a non-EM deposition is driven entirely by the
+file types registered, with `check_required_files()` enforcing the per-method
+rules from onedep_lib's bundled `schemas/json/*.json`. `em_subtype`, voxel,
+and the MRC sniff are gated to EM. An X-ray deposition (MMCIF_COORD +
+CRYSTAL_STRUC_FACTORS) prepares and dry-runs `ok: true`. EM stays the default
+and the skill's focus; the skill description remains EM-specific. Original
+note below kept for context.
+
+---
+_(original entry)_
+
+## 2b. Other experiment types — original assessment
 
 **What it is:** `onedep_lib` isn't EM-specific — its own quickstart example
 uses `ExperimentType.XRAY`, and the enum (`onedep_lib.ExperimentType`)

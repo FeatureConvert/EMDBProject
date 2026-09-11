@@ -10,13 +10,16 @@ log into the OneDep web UI to complete those sections before the entry can
 be validated/released. This script automates deposition creation and core
 file upload only - not full end-to-end submission.
 
-Manifest schema (JSON, created/updated in place by this script):
+Manifest schema (JSON, created/updated in place by this script; the
+authoritative structural definition is scripts/manifest.schema.json):
 {
   "email": "depositor@example.org",
-  "users": ["0000-0002-XXXX-XXXX"],
+  "users": ["0000-0002-XXXX-XXXX"],   # ORCID iD(s), format + checksum validated
   "country": "UK",
-  "em_subtype": "SPA",              # SPA | HELICAL | SUBTOMOGRAM | TOMOGRAPHY
-  "coordinates": false,               # true if an MMCIF_COORD file is included
+  "experiment_type": "EM",            # optional, default EM; also XRAY/NMR/SSNMR/NEUTRON/FIBER/EC
+  "em_subtype": "SPA",                # required for EM only: SPA | HELICAL | SUBTOMOGRAM | TOMOGRAPHY
+  "coordinates": false,               # true if a coordinates file is included
+  "related_emdb": [],                 # optional EMD-XXXXX accessions to cross-reference (link in web UI)
   "session_id": null,                 # filled in by `prepare`
   "remote_dep_id": null,              # filled in by `submit`
   "files": [
@@ -27,6 +30,10 @@ Manifest schema (JSON, created/updated in place by this script):
     {"path": "/abs/path/preview.png", "file_type": "ENTRY_IMAGE"}
   ]
 }
+(For non-EM experiment types, omit em_subtype/voxel and register the file
+types that method needs - e.g. XRAY: MMCIF_COORD + CRYSTAL_STRUC_FACTORS;
+NMR: MMCIF_COORD + NMR_ACS + NMR_RESTRAINT_*. check_required_files enforces
+the per-method rules from onedep_lib's bundled schemas.)
 
 Subcommands:
   prepare --manifest <path>            create/resume local session, register files (no network beyond schema fetch, which is bundled locally)
@@ -50,7 +57,9 @@ from common import (  # noqa: E402
     JsonArgumentParser,
     country_enum,
     em_subtype_enum,
+    emdb_accession_problem,
     email_problem,
+    experiment_type_enum,
     fail,
     file_type_enum,
     iter_schema_issues,
@@ -217,7 +226,7 @@ def _open_deposition(manifest: dict, config):
         email=manifest["email"],
         users=manifest["users"],
         country=country_enum(manifest["country"]),
-        experiment_type=dsp.ExperimentType.EM,
+        experiment_type=experiment_type_enum(manifest.get("experiment_type", "EM")),
         config=config,
     )
     return dep, True
@@ -292,10 +301,24 @@ def _validate_manifest(manifest: dict) -> None:
             fail(f"users: {problem}")
 
     # Enum resolution is a pure local lookup - validate before any session
-    # exists. _open_deposition re-resolves country when creating; the
-    # registration loop re-resolves per-entry file types.
+    # exists. _open_deposition re-resolves country/experiment_type when
+    # creating; the registration loop re-resolves per-entry file types.
     country_enum(manifest["country"])
-    em_subtype_enum(manifest["em_subtype"])
+    exp_type = experiment_type_enum(manifest.get("experiment_type", "EM"))
+    # em_subtype is required (and meaningful) only for EM - onedep_lib's own
+    # required-files schema requires a subtype for em and no other method.
+    # The JSON Schema can't express "required-if-EM" cleanly across the
+    # case-insensitive experiment_type, so enforce it here.
+    if exp_type.name == "EM":
+        if "em_subtype" not in manifest:
+            fail("em_subtype is required for EM experiments (SPA, HELICAL, SUBTOMOGRAM, or TOMOGRAPHY).")
+        em_subtype_enum(manifest["em_subtype"])
+
+    for accession in manifest.get("related_emdb", []):
+        problem = emdb_accession_problem(accession)
+        if problem:
+            fail(f"related_emdb: {problem}")
+
     _validate_files_section(manifest["files"])
 
 
@@ -321,13 +344,23 @@ def cmd_prepare(manifest_path: str) -> None:
             entry.pop("file_id", None)
         save_manifest(manifest_path, manifest)
 
+    exp_type = experiment_type_enum(manifest.get("experiment_type", "EM"))
     try:
-        dep.set_em_params(
-            em_subtype=em_subtype_enum(manifest["em_subtype"]),
-            # Validated as a real JSON boolean in _validate_manifest - no
-            # bool() coercion, which would read the string "false" as True.
-            coordinates=manifest.get("coordinates", False),
-        )
+        if exp_type.name == "EM":
+            # set_em_params (subtype + voxel later) is EM-only in onedep_lib.
+            # Non-EM experiments set only experiment_type (already passed to
+            # deposit_init) + coordinates, and are driven by which files are
+            # registered; check_required_files enforces the per-method rules.
+            dep.set_em_params(
+                em_subtype=em_subtype_enum(manifest["em_subtype"]),
+                # Validated as a real JSON boolean in _validate_manifest - no
+                # bool() coercion, which would read the string "false" as True.
+                coordinates=manifest.get("coordinates", False),
+            )
+        elif "coordinates" in manifest:
+            # onedep_lib exposes the coordinates flag only via set_em_params;
+            # deposit_init took None, so pass it through here for non-EM too.
+            dep.set_em_params(coordinates=manifest["coordinates"])
 
         for entry in files:
             ftype = file_type_enum(entry["file_type"])
@@ -421,7 +454,7 @@ def _render_preview(manifest: dict, manifest_path: str) -> str:
     lines.append("")
 
     country = country_enum(manifest["country"])
-    subtype = em_subtype_enum(manifest["em_subtype"])
+    exp_type = experiment_type_enum(manifest.get("experiment_type", "EM"))
     coordinates = manifest.get("coordinates", False)
 
     lines.append("## Deposition metadata")
@@ -429,9 +462,13 @@ def _render_preview(manifest: dict, manifest_path: str) -> str:
     lines.append(f"- **Depositor email:** {manifest['email']}")
     lines.append(f"- **ORCID iD(s):** {', '.join(manifest['users'])}")
     lines.append(f"- **Country:** {country.value} (`{country.name}`)")
-    lines.append("- **Experiment type:** EM")
-    lines.append(f"- **EM subtype:** {subtype.name}")
+    lines.append(f"- **Experiment type:** {exp_type.name}")
+    if exp_type.name == "EM":
+        lines.append(f"- **EM subtype:** {em_subtype_enum(manifest['em_subtype']).name}")
     lines.append(f"- **Includes fitted coordinates:** {'yes' if coordinates else 'no'}")
+    related = manifest.get("related_emdb", [])
+    if related:
+        lines.append(f"- **Related EMDB entries:** {', '.join(related)}")
     lines.append("")
 
     lines.append("## Files")
@@ -465,6 +502,14 @@ def _render_preview(manifest: dict, manifest_path: str) -> str:
         "before the entry can be validated and released. This preview and the "
         "`submit` step cover deposition creation and core file upload only."
     )
+    if related:
+        lines.append("")
+        lines.append(
+            "**Related entries:** the deposition API (`onedep_lib`) has no "
+            "cross-referencing call, so the related EMDB entries listed above "
+            f"({', '.join(related)}) must be linked to this deposition by hand "
+            "in the OneDep web UI's \"Related entries\" section after submit."
+        )
     lines.append("")
     return "\n".join(lines)
 
@@ -558,18 +603,27 @@ def cmd_submit(manifest_path: str, confirm: bool, force: bool) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+    note = (
+        "Core files uploaded and processing triggered. The depositor "
+        "still needs to complete the detailed experimental sections "
+        "(Specimen Preparation, Microscopy, Image Recording, "
+        "Reconstruction, Fitting/Interpretation) in the OneDep web UI "
+        "at the site_url above before this entry can be validated and released."
+    )
+    related = manifest.get("related_emdb", [])
+    if related:
+        note += (
+            f" Also link the related entries ({', '.join(related)}) in the web UI's "
+            "\"Related entries\" section - the deposition API can't set those."
+        )
+
     print_json(
         {
             "success": True,
             "remote_dep_id": dep_id,
             "site_url": site_url,
-            "note": (
-                "Core files uploaded and processing triggered. The depositor "
-                "still needs to complete the detailed experimental sections "
-                "(Specimen Preparation, Microscopy, Image Recording, "
-                "Reconstruction, Fitting/Interpretation) in the OneDep web UI "
-                "at the site_url above before this entry can be validated and released."
-            ),
+            "related_emdb": related or None,
+            "note": note,
         }
     )
 

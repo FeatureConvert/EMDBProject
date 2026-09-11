@@ -549,10 +549,13 @@ now writes a human-readable review of the exact payload before any real
 submission, manifest structure is validated against a JSON Schema
 (`scripts/manifest.schema.json`), and map files get a local MRC2014/CCP4
 header sniff before upload, and ORCID iD (checksum) and email format are
-validated locally. 146 tests currently pass. See
-[`ROADMAP.md`](ROADMAP.md) for the remaining expansion ideas (composite
-maps, other experiment types, read-only lookups; the local-file-validation
-and manifest-schema items are now implemented) and one idea that was
+validated locally. EM is the focus, but the manifest's optional
+`experiment_type` field also drives X-ray/NMR/etc. depositions (onedep_lib
+is experiment-type-agnostic), and an optional `related_emdb` list records
+composite-map cross-references for the depositor to link in the OneDep web
+UI (the deposition API has no cross-referencing call). 168 tests currently
+pass. See [`ROADMAP.md`](ROADMAP.md) for what remains (composite-map
+*automation* is blocked upstream; read-only lookups) and one idea that was
 investigated and deliberately rejected. Real `submit`/transfer has not yet
 been exercised against production wwPDB/EMPIAR — that only happens when
 you're ready with an actual deposition.

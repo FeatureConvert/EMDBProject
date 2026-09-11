@@ -263,6 +263,18 @@ def email_problem(value: str) -> str | None:
     return None
 
 
+_EMDB_ACCESSION_RE = re.compile(r"^EMD-\d{4,}$")
+
+
+def emdb_accession_problem(value: str) -> str | None:
+    """Return a message if `value` isn't a well-formed EMDB accession
+    (EMD-XXXX, four or more digits), else None. Format only - this does not
+    check the entry exists (that needs a network lookup; see emdb_lookup.py)."""
+    if not isinstance(value, str) or not _EMDB_ACCESSION_RE.match(value.strip()):
+        return f"{value!r} is not a valid EMDB accession - expected EMD-XXXX (e.g. EMD-8000)"
+    return None
+
+
 # --- EMPIAR submission-marker sidecar ----------------------------------------
 
 
@@ -301,6 +313,20 @@ def country_enum(name: str):
         fail(
             f"Unknown country: {name!r}. Use a Country enum name (e.g. UK, USA) "
             "or its exact wwPDB display value (e.g. 'United Kingdom')."
+        )
+
+
+def experiment_type_enum(name: str):
+    import onedep_lib as dsp
+
+    name = require_str(name, "experiment_type")
+    key = name.strip().upper().replace(" ", "_").replace("-", "_")
+    try:
+        return dsp.ExperimentType[key]
+    except KeyError:
+        fail(
+            f"Unknown experiment_type: {name!r}. Expected one of: "
+            + ", ".join(t.name for t in dsp.ExperimentType)
         )
 
 

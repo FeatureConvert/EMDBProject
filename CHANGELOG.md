@@ -4,6 +4,37 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 is pre-release and not yet versioned.
 
+## [Unreleased] — 2026-09-11 (part 4: other experiment types + related entries)
+
+Implemented ROADMAP item 2, and the buildable part of item 1.
+
+### Added
+
+- **Non-EM experiment types** (ROADMAP item 2): the manifest now accepts an
+  optional `experiment_type` (default `EM`; also `XRAY`, `NMR`, `SSNMR`,
+  `NEUTRON`, `FIBER`, `EC`), resolved case-insensitively. `onedep_lib` is
+  experiment-type-agnostic, so a non-EM deposition is driven purely by the
+  file types registered, with `check_required_files()` enforcing the
+  per-method rules from onedep_lib's bundled schemas. `em_subtype`, the voxel
+  block, and the MRC sniff apply to EM only. Verified end-to-end: an X-ray
+  deposition (coordinates + structure factors) prepares and dry-runs
+  `ok: true` against the real library. EM remains the default and the
+  project's focus.
+- **`related_emdb`** manifest field (ROADMAP item 1, the buildable part):
+  an optional list of `EMD-XXXXX` accessions this entry is composite-related
+  to. Format-validated locally; `preview` and `submit` surface them with a
+  clear instruction to link them by hand in the OneDep web UI's "Related
+  entries" section — because `onedep_lib` exposes **no** deposition-to-
+  deposition cross-referencing API (its `related_emdb`/`related_bmrb` fields
+  are dormant: no setter, never persisted, never sent). See ROADMAP item 1.
+
+### Internal / tests
+
+- Added `common.experiment_type_enum` and `common.emdb_accession_problem`.
+- Coverage for non-EM validation (X-ray accepted without `em_subtype`, EM
+  still requires it, unknown type rejected, non-EM skips `set_em_params`),
+  and `related_emdb` format + preview surfacing. 146 → 168 tests, all passing.
+
 ## [Unreleased] — 2026-09-11 (part 3: ORCID/email validation)
 
 Finished the remaining half of ROADMAP item 5.

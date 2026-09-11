@@ -198,6 +198,31 @@ def test_email_problem_rejects_invalid(email):
     assert common.email_problem(email) is not None
 
 
+@pytest.mark.parametrize("name, expected", [("EM", "EM"), ("em", "EM"), ("xray", "XRAY"), ("NMR", "NMR")])
+def test_experiment_type_enum_resolves_case_insensitively(name, expected):
+    import onedep_lib as dsp
+
+    assert common.experiment_type_enum(name) == dsp.ExperimentType[expected]
+
+
+def test_experiment_type_enum_rejects_unknown(capsys):
+    with pytest.raises(SystemExit) as exc:
+        common.experiment_type_enum("cryoet")
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert "Unknown experiment_type" in out["error"]
+
+
+@pytest.mark.parametrize("acc", ["EMD-8000", "EMD-12345", "EMD-0001"])
+def test_emdb_accession_problem_accepts_valid(acc):
+    assert common.emdb_accession_problem(acc) is None
+
+
+@pytest.mark.parametrize("acc", ["8000", "EMD-", "EMDB-8000", "EMD-abc", "emd-8000", 8000])
+def test_emdb_accession_problem_rejects_invalid(acc):
+    assert common.emdb_accession_problem(acc) is not None
+
+
 def test_submitted_marker_path_replaces_suffix():
     # json_input.json -> json_input.submitted.json (suffix replaced, not
     # appended). Both the EMPIAR writer and the list_depositions reader
